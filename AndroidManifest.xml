@@ -1,0 +1,4 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Needed for the Dart VM Service / DevTools connection in debug builds. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+</manifest>
