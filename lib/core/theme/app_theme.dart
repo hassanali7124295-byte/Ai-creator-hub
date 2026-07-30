@@ -1,0 +1,151 @@
+import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
+
+/// Centralized theme configuration for AI Creator Hub.
+///
+/// Design language: modern "premium AI product" look —
+/// deep indigo/violet primary, soft rounded cards, subtle elevation,
+/// and clean typography (Poppins/Inter via Google Fonts).
+class AppTheme {
+  AppTheme._();
+
+  // Brand colors
+  static const Color primaryLight = Color(0xFF6C5CE7); // violet
+  static const Color secondaryLight = Color(0xFF00CEC9); // teal accent
+  static const Color primaryDark = Color(0xFF8C7CFF);
+  static const Color secondaryDark = Color(0xFF2EE6E0);
+
+  static const double borderRadius = 20.0;
+
+  static ThemeData get lightTheme {
+    final colorScheme = ColorScheme.fromSeed(
+      seedColor: primaryLight,
+      secondary: secondaryLight,
+      brightness: Brightness.light,
+    );
+
+    return _buildTheme(colorScheme);
+  }
+
+  static ThemeData get darkTheme {
+    final colorScheme = ColorScheme.fromSeed(
+      seedColor: primaryDark,
+      secondary: secondaryDark,
+      brightness: Brightness.dark,
+    );
+
+    return _buildTheme(colorScheme);
+  }
+
+  static ThemeData _buildTheme(ColorScheme colorScheme) {
+    final baseTextTheme = GoogleFonts.interTextTheme();
+    final headlineFont = GoogleFonts.poppinsTextTheme();
+
+    final textTheme = baseTextTheme.copyWith(
+      headlineLarge: headlineFont.headlineLarge?.copyWith(
+        fontWeight: FontWeight.w700,
+      ),
+      headlineMedium: headlineFont.headlineMedium?.copyWith(
+        fontWeight: FontWeight.w700,
+      ),
+      headlineSmall: headlineFont.headlineSmall?.copyWith(
+        fontWeight: FontWeight.w600,
+      ),
+      titleLarge: headlineFont.titleLarge?.copyWith(
+        fontWeight: FontWeight.w600,
+      ),
+      titleMedium: headlineFont.titleMedium?.copyWith(
+        fontWeight: FontWeight.w600,
+      ),
+    );
+
+    return ThemeData(
+      useMaterial3: true,
+      colorScheme: colorScheme,
+      scaffoldBackgroundColor: colorScheme.surface,
+      textTheme: textTheme,
+      appBarTheme: AppBarTheme(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        centerTitle: false,
+        titleTextStyle: textTheme.titleLarge?.copyWith(
+          color: colorScheme.onSurface,
+        ),
+        iconTheme: IconThemeData(color: colorScheme.onSurface),
+      ),
+      cardTheme: CardThemeData(
+        elevation: 0,
+        color: colorScheme.surfaceContainerHigh,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(borderRadius),
+        ),
+        margin: EdgeInsets.zero,
+      ),
+      chipTheme: ChipThemeData(
+        backgroundColor: colorScheme.surfaceContainerHigh,
+        labelStyle: textTheme.bodyMedium,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(50),
+        ),
+        side: BorderSide.none,
+      ),
+      elevatedButtonTheme: ElevatedButtonThemeData(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: colorScheme.primary,
+          foregroundColor: colorScheme.onPrimary,
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          textStyle: textTheme.titleMedium,
+          elevation: 0,
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          foregroundColor: colorScheme.primary,
+          side: BorderSide(color: colorScheme.outlineVariant),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+        ),
+      ),
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: colorScheme.surfaceContainerHigh,
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 20,
+          vertical: 16,
+        ),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+          borderSide: BorderSide.none,
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+          borderSide: BorderSide.none,
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+          borderSide: BorderSide(color: colorScheme.primary, width: 1.5),
+        ),
+      ),
+      navigationBarTheme: NavigationBarThemeData(
+        backgroundColor: colorScheme.surfaceContainerHigh,
+        elevation: 0,
+        height: 68,
+        indicatorColor: colorScheme.primary.withOpacity(0.15),
+        labelTextStyle: WidgetStateProperty.resolveWith((states) {
+          final selected = states.contains(WidgetState.selected);
+          return textTheme.labelMedium?.copyWith(
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+            color: selected ? colorScheme.primary : colorScheme.onSurfaceVariant,
+          );
+        }),
+      ),
+      splashFactory: InkRipple.splashFactory,
+    );
+  }
+}

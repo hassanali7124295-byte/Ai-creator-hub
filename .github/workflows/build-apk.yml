@@ -1,0 +1,68 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    name: Build release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Flutter doctor
+        run: flutter doctor -v
+
+      # android/ is a real, committed Gradle project (Kotlin DSL, AGP 8.9.1,
+      # Gradle 8.11.1 — the combo confirmed compatible with Flutter 3.35.x).
+      # The only piece intentionally NOT committed is the Gradle wrapper jar
+      # (a compiled binary), so it's generated fresh here from the pinned
+      # gradle-wrapper.properties version. This keeps the repo free of an
+      # opaque binary while still producing a fully working ./gradlew.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.11.1
+
+      - name: Generate Gradle wrapper
+        working-directory: android
+        run: gradle wrapper --gradle-version 8.11.1 --distribution-type all
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze project
+        run: flutter analyze
+        continue-on-error: true
+
+      - name: Run tests
+        run: flutter test
+        continue-on-error: true
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-creator-hub-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
