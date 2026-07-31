@@ -7,6 +7,7 @@ import 'package:mime/mime.dart';
 import 'package:image/image.dart' as img;
 
 import '../../models/chat_attachment.dart';
+import '../../widgets/attachment_sheet.dart';
 import 'attachment_service.dart';
 import 'gemini_service.dart';
 
