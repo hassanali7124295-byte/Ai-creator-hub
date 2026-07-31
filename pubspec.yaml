@@ -25,10 +25,22 @@ dependencies:
   google_fonts: ^6.2.1
   animate_do: ^3.3.4
 
+  # Markdown rendering for AI chat replies (flutter_markdown is discontinued;
+  # this is the actively-maintained community continuation).
+  flutter_markdown_plus: ^1.0.10
+
+  # Chat attachment picker (Step 8): Gallery / Camera / Document / File.
+  image_picker: ^1.1.2
+  file_picker: ^8.1.2
+
+  # Attachment pipeline (Step 9): send picked files to Gemini.
+  # Both are pure-Dart — no native/platform code, no manifest changes.
+  mime: ^1.0.5            # detect attachment mime type from file name
+  image: ^4.2.0            # decode/resize/re-encode images before upload
+
   # --- Added in later phases, not needed for Step 1 ---
   # google_mobile_ads: ^5.1.0   # Phase 4 - requires AdMob App ID manifest setup first
   # flutter_svg: ^2.0.10+1      # add when custom SVG assets are introduced
-  # file_picker: ^8.0.6         # Phase 3 - PDF Summarizer / Resume Builder
   # path_provider: ^2.1.3       # Phase 3 - PDF Summarizer / Resume Builder
 
 dev_dependencies:

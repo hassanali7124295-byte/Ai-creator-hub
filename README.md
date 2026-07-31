@@ -4,15 +4,28 @@ An AI-powered creator assistant app built with Flutter — AI chat, image genera
 video prompt generation, script writing, and more creator tools, wrapped in a
 modern Material 3 UI.
 
-## Current status: Step 5 of the build
+## Current status: Step 9 of the build
 
 This repo now contains:
-- `pubspec.yaml` — dependencies for state management, theming, and networking
+- `pubspec.yaml` — dependencies for state management, theming, networking,
+  and the attachment pipeline
 - `analysis_options.yaml` — flutter_lints config
 - `lib/` — app entry point, Material 3 theme system, home dashboard, bottom
-  navigation shell, AI Chat screen (Gemini-ready), and placeholder screens
+  navigation shell, AI Chat screen (Gemini-ready, with image/PDF/file
+  attachments sent as part of the conversation), and placeholder screens
   for each upcoming feature
 - `test/widget_test.dart` — smoke test for the home dashboard + navigation
+
+### Chat attachments (Step 9)
+
+The "+" button in AI Chat lets you attach a photo, camera shot, PDF, or any
+other file to a message. Images are automatically downscaled and
+re-compressed to JPEG (capped at 1600px on the long edge, ~3 MB target)
+before upload — this keeps requests fast without a visible quality hit, and
+also normalizes formats like HEIC to something Gemini reliably accepts.
+PDFs and other files are sent as-is, up to 15 MB. Only the attachment on
+the current message is sent to Gemini; earlier attachments in the
+conversation are not re-uploaded on every follow-up turn.
 
 **`android/` is intentionally not committed.** It's generated fresh by the
 CI workflow using the real `flutter create` command from Flutter **3.44.0**

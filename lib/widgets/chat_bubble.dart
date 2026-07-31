@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+
 import '../models/chat_message.dart';
+import 'attachment_preview.dart';
 
 /// A single chat bubble, aligned right (user) or left (AI), with
-/// distinct colors and an error state for failed AI responses.
+/// distinct colors, Markdown rendering for AI replies, and an error
+/// state for failed AI responses.
 class ChatBubble extends StatelessWidget {
   final ChatMessage message;
 
@@ -68,10 +72,43 @@ class ChatBubble extends StatelessWidget {
                   ],
                 ),
               ),
-            Text(
-              message.text,
-              style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
-            ),
+            if (message.attachments.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final attachment in message.attachments)
+                      AttachmentPreview(attachment: attachment),
+                  ],
+                ),
+              ),
+            // AI replies render as Markdown (bold, lists, code blocks, etc.);
+            // user messages and error text stay as plain text.
+            if (!isUser && !message.isError)
+              MarkdownBody(
+                data: message.text,
+                selectable: true,
+                styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+                  p: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+                  code: theme.textTheme.bodySmall?.copyWith(
+                    color: textColor,
+                    backgroundColor:
+                        theme.colorScheme.surfaceContainerHighest,
+                    fontFamily: 'monospace',
+                  ),
+                  codeblockDecoration: BoxDecoration(
+                    color: theme.colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+              )
+            else
+              Text(
+                message.text,
+                style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+              ),
           ],
         ),
       ),
