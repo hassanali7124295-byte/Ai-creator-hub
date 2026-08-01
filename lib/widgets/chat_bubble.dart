@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
+import '../core/theme/chat_palette.dart';
 import '../models/chat_message.dart';
 import 'attachment_preview.dart';
 
@@ -71,6 +72,11 @@ class _ChatBubbleState extends State<ChatBubble> {
   int _visibleChars = 0;
   bool _streaming = false;
 
+  // Step 12.4: the action row (copy/share/regenerate/etc.) is now hidden
+  // by default and only shown once the person taps or long-presses the
+  // AI reply — instead of appearing automatically once streaming ends.
+  bool _actionsVisible = false;
+
   bool get _isAiReply => !widget.message.isUser && !widget.message.isError;
 
   @override
@@ -83,11 +89,18 @@ class _ChatBubbleState extends State<ChatBubble> {
   void didUpdateWidget(covariant ChatBubble oldWidget) {
     super.didUpdateWidget(oldWidget);
     // A different message landed in this slot (e.g. Regenerate swapped
-    // the reply at the same list index) — restart the reveal for it.
+    // the reply at the same list index) — restart the reveal for it and
+    // hide any actions left showing from the previous message.
     if (!identical(oldWidget.message, widget.message)) {
       _streamTimer?.cancel();
+      _actionsVisible = false;
       _startOrSkipStreaming();
     }
+  }
+
+  void _toggleActions() {
+    HapticFeedback.selectionClick();
+    setState(() => _actionsVisible = !_actionsVisible);
   }
 
   void _startOrSkipStreaming() {
@@ -156,30 +169,19 @@ class _ChatBubbleState extends State<ChatBubble> {
 
     final isDark = theme.brightness == Brightness.dark;
 
+    // Step 12.4: the user bubble now uses a flat, lighter "sea green"
+    // instead of the theme's punchier primary — no gradient, no heavy
+    // solid block of saturated color, just a soft, muted fill.
     final bubbleColor = message.isError
         ? theme.colorScheme.errorContainer
         : isUser
-            ? theme.colorScheme.primary
+            ? ChatPalette.userBubble
             : theme.colorScheme.surfaceContainerHigh;
-
-    // Step 12.2: the user bubble now carries a soft two-tone emerald
-    // gradient instead of one flat fill — a small touch that reads as
-    // noticeably more premium up close without changing the overall hue.
-    final bubbleGradient = isUser && !message.isError
-        ? LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              theme.colorScheme.primary,
-              Color.lerp(theme.colorScheme.primary, Colors.black, isDark ? 0.0 : 0.12)!,
-            ],
-          )
-        : null;
 
     final textColor = message.isError
         ? theme.colorScheme.onErrorContainer
         : isUser
-            ? theme.colorScheme.onPrimary
+            ? Colors.white
             : theme.colorScheme.onSurface;
 
     // While streaming, only the revealed slice of the reply is rendered.
@@ -189,9 +191,10 @@ class _ChatBubbleState extends State<ChatBubble> {
     final displayedText =
         isAiReply ? message.text.substring(0, safeVisible) : message.text;
 
-    // Actions only appear once a reply has fully streamed in, matching the
-    // feel of premium AI chat apps and avoiding layout churn mid-reveal.
-    final showActions = isAiReply && !_streaming;
+    // Step 12.4: actions are hidden by default and only appear once the
+    // person explicitly taps or long-presses the reply (see
+    // `_toggleActions`) — no more auto-reveal once streaming finishes.
+    final showActions = isAiReply && !_streaming && _actionsVisible;
 
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
@@ -200,53 +203,65 @@ class _ChatBubbleState extends State<ChatBubble> {
             isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            margin: const EdgeInsets.only(top: 8),
-            padding: isAiReply
-                ? const EdgeInsets.symmetric(horizontal: 20, vertical: 16)
-                : const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-            constraints: BoxConstraints(
-              maxWidth: MediaQuery.of(context).size.width * 0.8,
-            ),
-            decoration: BoxDecoration(
-              color: bubbleGradient == null ? bubbleColor : null,
-              gradient: bubbleGradient,
-              borderRadius: BorderRadius.only(
-                topLeft: const Radius.circular(20),
-                topRight: const Radius.circular(20),
-                bottomLeft: Radius.circular(isUser ? 20 : 6),
-                bottomRight: Radius.circular(isUser ? 6 : 20),
+          GestureDetector(
+            // Step 12.4: tapping or long-pressing an AI reply toggles its
+            // action row; user/error bubbles ignore both (long-press-to-
+            // copy for those is still wired up one level up, in the
+            // screen's list itemBuilder).
+            onTap: isAiReply ? _toggleActions : null,
+            onLongPress: isAiReply ? _toggleActions : null,
+            child: Container(
+              margin: const EdgeInsets.only(top: 8),
+              padding: isAiReply
+                  ? const EdgeInsets.symmetric(horizontal: 20, vertical: 16)
+                  : const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+              constraints: BoxConstraints(
+                // Step 12.4: the user bubble is now noticeably smaller —
+                // about 68% of the screen — instead of sharing the AI
+                // reply's roomier 80% ceiling.
+                maxWidth: MediaQuery.of(context).size.width *
+                    (isUser ? 0.68 : 0.8),
               ),
-              border: isAiReply
-                  ? Border.all(
-                      color: theme.colorScheme.outlineVariant.withOpacity(0.3),
-                      width: 1,
-                    )
-                  : null,
-              boxShadow: isAiReply
-                  ? [
-                      BoxShadow(
-                        color: theme.colorScheme.shadow
-                            .withOpacity(isDark ? 0.0 : 0.06),
-                        blurRadius: 14,
-                        offset: const Offset(0, 4),
-                      ),
-                    ]
-                  : isUser
-                      ? [
-                          BoxShadow(
-                            color: theme.colorScheme.primary
-                                .withOpacity(isDark ? 0.12 : 0.22),
-                            blurRadius: 12,
-                            offset: const Offset(0, 4),
-                          ),
-                        ]
-                      : null,
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
+              decoration: BoxDecoration(
+                color: bubbleColor,
+                borderRadius: BorderRadius.only(
+                  topLeft: const Radius.circular(24),
+                  topRight: const Radius.circular(24),
+                  bottomLeft: Radius.circular(isUser ? 24 : 8),
+                  bottomRight: Radius.circular(isUser ? 8 : 24),
+                ),
+                border: isAiReply
+                    ? Border.all(
+                        color: theme.colorScheme.outlineVariant.withOpacity(0.3),
+                        width: 1,
+                      )
+                    : null,
+                // Step 12.4: shadows across the board are now just a very
+                // soft touch — no more visible colored glow under the
+                // user bubble.
+                boxShadow: isAiReply
+                    ? [
+                        BoxShadow(
+                          color: theme.colorScheme.shadow
+                              .withOpacity(isDark ? 0.0 : 0.05),
+                          blurRadius: 10,
+                          offset: const Offset(0, 3),
+                        ),
+                      ]
+                    : isUser
+                        ? [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(isDark ? 0.10 : 0.08),
+                              blurRadius: 8,
+                              offset: const Offset(0, 2),
+                            ),
+                          ]
+                        : null,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
                 if (message.isError)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 4),
@@ -360,6 +375,7 @@ class _ChatBubbleState extends State<ChatBubble> {
                     style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
                   ),
               ],
+              ),
             ),
           ),
           AnimatedSize(

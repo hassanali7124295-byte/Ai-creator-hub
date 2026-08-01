@@ -425,6 +425,16 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() => _pendingAttachment = null);
   }
 
+  /// Fills the composer with a tapped suggestion chip's text (Step 12.3).
+  /// Purely a text-field convenience — it does not send the message, so
+  /// the person can still edit it first; sending still goes through the
+  /// normal [_sendMessage] path untouched.
+  void _applySuggestion(String text) {
+    _inputController.text = text;
+    _inputController.selection =
+        TextSelection.collapsed(offset: text.length);
+  }
+
   /// Placeholder for future speech-to-text input.
   void _onVoiceTap() {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -525,6 +535,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           ? _EmptyState(
                               key: ValueKey('empty-$_conversationId'),
                               theme: theme,
+                              onSuggestionTap: _applySuggestion,
                             )
                           : ListView.builder(
                               key: ValueKey('list-$_conversationId'),
@@ -543,33 +554,62 @@ class _ChatScreenState extends State<ChatScreen> {
                                 final isAiReply =
                                     !message.isUser && !message.isError;
                                 final isLast = index == _messages.length - 1;
-                                return FadeInUp(
-                                  duration: const Duration(milliseconds: 220),
-                                  from: 8,
-                                  child: GestureDetector(
-                                  onLongPress: () => _copyMessage(message.text),
-                                  child: ChatBubble(
-                                    message: message,
-                                    onCopy: isAiReply
-                                        ? () => _copyMessage(message.text)
-                                        : null,
-                                    onShare: isAiReply
-                                        ? () => _shareMessage(message.text)
-                                        : null,
-                                    onRegenerate:
-                                        isAiReply && isLast && !_isSending
-                                            ? () => _regenerateResponse(index)
-                                            : null,
-                                    onReadAloud: isAiReply
-                                        ? () => _toggleSpeak(index, message.text)
-                                        : null,
-                                    isSpeaking: _speakingIndex == index,
-                                    animate:
-                                        identical(message, _streamingMessage),
-                                    onStreamTick: _scrollToBottom,
-                                  ),
-                                  ),
-                                );
+                                // Step 12.4: user messages slide in from the
+                                // right while fading in; AI (and error)
+                                // messages just fade in — no slide, no
+                                // bounce/spring on either.
+                                final entrance = message.isUser
+                                    ? FadeInRight(
+                                        duration:
+                                            const Duration(milliseconds: 260),
+                                        from: 24,
+                                        child: GestureDetector(
+                                          onLongPress: () =>
+                                              _copyMessage(message.text),
+                                          child: ChatBubble(
+                                            message: message,
+                                            animate: identical(
+                                                message, _streamingMessage),
+                                            onStreamTick: _scrollToBottom,
+                                          ),
+                                        ),
+                                      )
+                                    : FadeIn(
+                                        duration:
+                                            const Duration(milliseconds: 260),
+                                        // Step 12.4: the AI action row
+                                        // (copy/share/regenerate/read
+                                        // aloud/like/dislike) is now hidden
+                                        // by default and only revealed by
+                                        // tapping or long-pressing the reply
+                                        // itself — handled inside
+                                        // ChatBubble — so the outer
+                                        // long-press-to-copy from before no
+                                        // longer applies to AI replies.
+                                        child: ChatBubble(
+                                          message: message,
+                                          onCopy: isAiReply
+                                              ? () => _copyMessage(message.text)
+                                              : null,
+                                          onShare: isAiReply
+                                              ? () => _shareMessage(message.text)
+                                              : null,
+                                          onRegenerate:
+                                              isAiReply && isLast && !_isSending
+                                                  ? () =>
+                                                      _regenerateResponse(index)
+                                                  : null,
+                                          onReadAloud: isAiReply
+                                              ? () =>
+                                                  _toggleSpeak(index, message.text)
+                                              : null,
+                                          isSpeaking: _speakingIndex == index,
+                                          animate: identical(
+                                              message, _streamingMessage),
+                                          onStreamTick: _scrollToBottom,
+                                        ),
+                                      );
+                                return entrance;
                               },
                             ),
                     ),
@@ -697,158 +737,145 @@ class _ApiKeyBanner extends StatelessWidget {
   }
 }
 
-/// A premium, minimal "empty chat" welcome screen — similar in spirit to
-/// ChatGPT/Gemini's landing state: a soft gradient mark, a short intro,
-/// and a compact list of what the assistant can help with.
+/// A clean, minimal "empty chat" welcome screen in the style of Meta AI:
+/// a bold left-aligned heading, generous empty space, and a handful of
+/// small outlined suggestion chips — no crowded card list.
 class _EmptyState extends StatelessWidget {
   final ThemeData theme;
-  const _EmptyState({super.key, required this.theme});
 
-  static const List<(IconData, String)> _capabilities = [
-    (Icons.help_outline_rounded, 'Ask questions'),
-    (Icons.image_outlined, 'Generate images'),
-    (Icons.description_outlined, 'Write scripts'),
-    (Icons.lightbulb_outline_rounded, 'Solve problems'),
-    (Icons.auto_awesome_outlined, 'Create content'),
+  /// Invoked with a suggestion's prompt text when its chip is tapped.
+  /// Only fills the composer — sending still goes through the normal
+  /// input bar, so this stays a pure UI convenience.
+  final ValueChanged<String> onSuggestionTap;
+
+  const _EmptyState({super.key, required this.theme, required this.onSuggestionTap});
+
+  // Step 12.3: was 5 large cards ("Ask questions", "Generate images",
+  // "Write scripts", "Solve problems", "Create content") — trimmed to 4
+  // short prompts that read as quick-tap chips rather than a menu.
+  static const List<String> _suggestions = [
+    'Ask a question',
+    'Brainstorm ideas',
+    'Write a script',
+    'Summarize a file',
   ];
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(28, 36, 28, 24),
+      // Step 12.3: content is now anchored top-left instead of centered —
+      // centering was a big part of why the old screen felt like a
+      // crowded, busy "menu" rather than a calm, premium landing state.
+      child: Align(
+        alignment: Alignment.topLeft,
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            FadeIn(
-              duration: const Duration(milliseconds: 400),
-              child: Container(
-                width: 84,
-                height: 84,
-                padding: const EdgeInsets.all(4),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: theme.colorScheme.primary.withOpacity(0.18),
-                    width: 2,
-                  ),
-                ),
-                child: Container(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        theme.colorScheme.primary,
-                        theme.colorScheme.primary.withOpacity(0.7),
-                      ],
-                    ),
-                    shape: BoxShape.circle,
-                    boxShadow: [
-                      BoxShadow(
-                        color: theme.colorScheme.primary.withOpacity(0.28),
-                        blurRadius: 24,
-                        offset: const Offset(0, 8),
-                      ),
-                    ],
-                  ),
-                  child: Icon(
-                    Icons.auto_awesome_rounded,
-                    color: theme.colorScheme.onPrimary,
-                    size: 32,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
             FadeInUp(
-              duration: const Duration(milliseconds: 400),
-              delay: const Duration(milliseconds: 80),
+              duration: const Duration(milliseconds: 420),
               child: Text(
-                'What can I do for you?',
-                style: theme.textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: -0.3,
+                'What can I do\nfor you?',
+                style: theme.textTheme.headlineMedium?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  height: 1.15,
+                  letterSpacing: -0.6,
                 ),
-                textAlign: TextAlign.center,
+                textAlign: TextAlign.left,
               ),
             ),
-            const SizedBox(height: 6),
+            // Step 12.3: a much bigger gap under the heading — the old
+            // screen had only 28px before the first card; this breathing
+            // room is what makes the screen feel spacious rather than
+            // packed.
+            const SizedBox(height: 40),
             FadeInUp(
-              duration: const Duration(milliseconds: 400),
-              delay: const Duration(milliseconds: 130),
-              child: Text(
-                'Ask a question, brainstorm ideas, or attach a file to begin.',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-                textAlign: TextAlign.center,
+              duration: const Duration(milliseconds: 420),
+              delay: const Duration(milliseconds: 90),
+              child: Wrap(
+                alignment: WrapAlignment.start,
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  for (final suggestion in _suggestions)
+                    _SuggestionChip(
+                      label: suggestion,
+                      theme: theme,
+                      onTap: () => onSuggestionTap(suggestion),
+                    ),
+                ],
               ),
             ),
-            const SizedBox(height: 28),
-            ...List.generate(_capabilities.length, (index) {
-              final (icon, label) = _capabilities[index];
-              final isDark = theme.brightness == Brightness.dark;
-              return FadeInUp(
-                duration: const Duration(milliseconds: 400),
-                delay: Duration(milliseconds: 170 + index * 60),
-                child: Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: Container(
-                    width: double.infinity,
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.surfaceContainerHigh,
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(
-                        color: theme.colorScheme.outlineVariant.withOpacity(0.4),
-                      ),
-                      boxShadow: isDark
-                          ? null
-                          : [
-                              BoxShadow(
-                                color: theme.colorScheme.shadow.withOpacity(0.04),
-                                blurRadius: 8,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
-                    ),
-                    child: Material(
-                      color: Colors.transparent,
-                      borderRadius: BorderRadius.circular(16),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(16),
-                        onTap: () => HapticFeedback.selectionClick(),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 18,
-                            vertical: 14,
-                          ),
-                          child: Row(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.all(8),
-                                decoration: BoxDecoration(
-                                  color: theme.colorScheme.primary.withOpacity(0.12),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: Icon(
-                                  icon,
-                                  size: 18,
-                                  color: theme.colorScheme.primary,
-                                ),
-                              ),
-                              const SizedBox(width: 14),
-                              Text(label, style: theme.textTheme.bodyMedium),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              );
-            }),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A small, rounded, outlined suggestion chip — Meta AI style: no fill,
+/// just a soft border, compact padding, and a quiet press animation.
+class _SuggestionChip extends StatefulWidget {
+  final String label;
+  final ThemeData theme;
+  final VoidCallback onTap;
+
+  const _SuggestionChip({
+    required this.label,
+    required this.theme,
+    required this.onTap,
+  });
+
+  @override
+  State<_SuggestionChip> createState() => _SuggestionChipState();
+}
+
+class _SuggestionChipState extends State<_SuggestionChip> {
+  bool _pressed = false;
+
+  void _setPressed(bool value) {
+    if (_pressed != value) setState(() => _pressed = value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = widget.theme;
+    return GestureDetector(
+      onTapDown: (_) => _setPressed(true),
+      onTapCancel: () => _setPressed(false),
+      onTapUp: (_) => _setPressed(false),
+      child: AnimatedScale(
+        scale: _pressed ? 0.96 : 1.0,
+        duration: const Duration(milliseconds: 110),
+        curve: Curves.easeOut,
+        child: Material(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(20),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(20),
+            onTap: () {
+              HapticFeedback.selectionClick();
+              widget.onTap();
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: theme.colorScheme.outlineVariant.withOpacity(0.7),
+                  width: 1.2,
+                ),
+              ),
+              child: Text(
+                widget.label,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w500,
+                  color: theme.colorScheme.onSurface,
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );

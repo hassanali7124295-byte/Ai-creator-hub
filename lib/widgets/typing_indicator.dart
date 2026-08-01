@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
 
-/// Three bouncing dots shown inside a bubble while the AI is "typing".
+import '../core/theme/chat_palette.dart';
+
+/// A single soft, pulsing emerald dot shown inside a bubble while the AI
+/// is "typing" (Step 12.4) — replaces the previous three-dot fade with
+/// one dot that gently grows/shrinks while its opacity breathes in and
+/// out. No bounce, no spring — just a slow, smooth ease.
 class TypingIndicator extends StatefulWidget {
   const TypingIndicator({super.key});
 
@@ -17,8 +22,8 @@ class _TypingIndicatorState extends State<TypingIndicator>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1100),
-    )..repeat();
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
   }
 
   @override
@@ -58,32 +63,20 @@ class _TypingIndicatorState extends State<TypingIndicator>
         child: AnimatedBuilder(
           animation: _controller,
           builder: (context, _) {
-            return Row(
-              mainAxisSize: MainAxisSize.min,
-              children: List.generate(3, (index) {
-                // Soft, ChatGPT-style fade: each dot pulses opacity only —
-                // no bounce or scale — with a gentle stagger between dots
-                // for an elegant, unhurried motion.
-                final double delay = index * 0.2;
-                final double raw = _controller.value - delay;
-                final double t = raw - raw.floorToDouble();
-                final double wave = t < 0.5 ? t * 2 : (1 - t) * 2;
-                final double eased = Curves.easeInOutSine.transform(wave);
-                double opacity = 0.28 + (eased * 0.62);
-                if (opacity > 1.0) opacity = 1.0;
-                if (opacity < 0.0) opacity = 0.0;
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 3.5),
-                  child: Container(
-                    width: 7.5,
-                    height: 7.5,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: theme.colorScheme.primary.withOpacity(opacity),
-                    ),
-                  ),
-                );
-              }),
+            final double eased =
+                Curves.easeInOutSine.transform(_controller.value);
+            final double scale = 0.75 + (eased * 0.5); // 0.75 -> 1.25
+            final double opacity = 0.35 + (eased * 0.65); // 0.35 -> 1.0
+            return Transform.scale(
+              scale: scale,
+              child: Container(
+                width: 9,
+                height: 9,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: ChatPalette.userBubble.withOpacity(opacity),
+                ),
+              ),
             );
           },
         ),

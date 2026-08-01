@@ -21,6 +21,13 @@ class ChatPalette {
   static const Color emeraldDark = Color(0xFF6EE7B7); // emerald-300
   static const Color graphite = Color(0xFF37474F); // blue-graphite 800
 
+  /// Step 12.4: a muted "sea green" used specifically for the user
+  /// message bubble and the typing dot — noticeably lighter/softer than
+  /// [emeraldLight], so the user's own messages read as gentle rather
+  /// than a heavy solid block of saturated green. Deliberately the same
+  /// in both light and dark mode, per spec.
+  static const Color userBubble = Color(0xFF2E8B57);
+
   static ThemeData themeFor(BuildContext context) {
     final base = Theme.of(context);
     final isDark = base.brightness == Brightness.dark;
