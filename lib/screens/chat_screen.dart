@@ -9,6 +9,7 @@ import '../core/services/attachment_processor_service.dart';
 import '../core/services/attachment_service.dart';
 import '../core/services/gemini_service.dart';
 import '../core/services/chat_storage_service.dart';
+import '../core/theme/chat_palette.dart';
 import '../models/chat_attachment.dart';
 import '../models/chat_message.dart';
 import '../widgets/attachment_preview.dart';
@@ -58,6 +59,12 @@ class _ChatScreenState extends State<ChatScreen> {
   // bubble shows the "stop" state at a time.
   final FlutterTts _tts = FlutterTts();
   int? _speakingIndex;
+
+  // Streaming reveal (Step 11): identifies the one AI reply — by object
+  // identity, not index — that should animate in gradually. Only ever
+  // set right after a fresh reply arrives (send or regenerate), never for
+  // messages restored from history, so old chats still render instantly.
+  ChatMessage? _streamingMessage;
 
   @override
   void initState() {
@@ -161,8 +168,10 @@ class _ChatScreenState extends State<ChatScreen> {
       );
 
       if (!mounted) return;
+      final aiMessage = ChatMessage(text: reply, isUser: false);
       setState(() {
-        _messages.add(ChatMessage(text: reply, isUser: false));
+        _messages.add(aiMessage);
+        _streamingMessage = aiMessage;
       });
     } on GeminiException catch (e) {
       if (!mounted) return;
@@ -265,8 +274,10 @@ class _ChatScreenState extends State<ChatScreen> {
       );
 
       if (!mounted) return;
+      final aiMessage = ChatMessage(text: reply, isUser: false);
       setState(() {
-        _messages.insert(aiIndex, ChatMessage(text: reply, isUser: false));
+        _messages.insert(aiIndex, aiMessage);
+        _streamingMessage = aiMessage;
       });
     } on GeminiException catch (e) {
       if (!mounted) return;
@@ -369,7 +380,7 @@ class _ChatScreenState extends State<ChatScreen> {
     // Chat UI runs its own premium "Emerald + Graphite" palette, scoped to
     // this screen's subtree only — the rest of the app keeps the default
     // theme from app_theme.dart untouched.
-    final theme = _ChatPalette.themeFor(context);
+    final theme = ChatPalette.themeFor(context);
 
     return Theme(
       data: theme,
@@ -421,6 +432,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                     ? () => _toggleSpeak(index, message.text)
                                     : null,
                                 isSpeaking: _speakingIndex == index,
+                                animate: identical(message, _streamingMessage),
+                                onStreamTick: _scrollToBottom,
                               ),
                             );
                           },
@@ -446,45 +459,6 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-/// Chat-only "Emerald + Graphite" palette — a more premium alternative to
-/// the app-wide Material purple, scoped strictly to [ChatScreen] via a
-/// local [Theme] override so every other screen keeps using
-/// `AppTheme.lightTheme` / `AppTheme.darkTheme` unchanged.
-class _ChatPalette {
-  _ChatPalette._();
-
-  static const Color _emeraldLight = Color(0xFF059669); // emerald-600
-  static const Color _emeraldDark = Color(0xFF34D399); // emerald-400
-  static const Color _graphite = Color(0xFF37474F); // blue-graphite 800
-
-  static ThemeData themeFor(BuildContext context) {
-    final base = Theme.of(context);
-    final isDark = base.brightness == Brightness.dark;
-
-    final scheme = ColorScheme.fromSeed(
-      seedColor: isDark ? _emeraldDark : _emeraldLight,
-      brightness: base.brightness,
-    ).copyWith(secondary: _graphite);
-
-    return base.copyWith(
-      colorScheme: scheme,
-      scaffoldBackgroundColor: scheme.surface,
-      appBarTheme: base.appBarTheme.copyWith(
-        backgroundColor: Colors.transparent,
-        iconTheme: IconThemeData(color: scheme.onSurface),
-        titleTextStyle: base.appBarTheme.titleTextStyle?.copyWith(
-          color: scheme.onSurface,
-        ),
-      ),
-      textSelectionTheme: TextSelectionThemeData(
-        cursorColor: scheme.primary,
-        selectionColor: scheme.primary.withOpacity(0.3),
-        selectionHandleColor: scheme.primary,
       ),
     );
   }
@@ -549,34 +523,44 @@ class _EmptyState extends StatelessWidget {
             FadeIn(
               duration: const Duration(milliseconds: 400),
               child: Container(
-                width: 76,
-                height: 76,
+                width: 84,
+                height: 84,
+                padding: const EdgeInsets.all(4),
                 decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      theme.colorScheme.primary,
-                      theme.colorScheme.primary.withOpacity(0.7),
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: theme.colorScheme.primary.withOpacity(0.18),
+                    width: 2,
+                  ),
+                ),
+                child: Container(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        theme.colorScheme.primary,
+                        theme.colorScheme.primary.withOpacity(0.7),
+                      ],
+                    ),
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: theme.colorScheme.primary.withOpacity(0.28),
+                        blurRadius: 24,
+                        offset: const Offset(0, 8),
+                      ),
                     ],
                   ),
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color: theme.colorScheme.primary.withOpacity(0.28),
-                      blurRadius: 24,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
-                ),
-                child: Icon(
-                  Icons.auto_awesome_rounded,
-                  color: theme.colorScheme.onPrimary,
-                  size: 32,
+                  child: Icon(
+                    Icons.auto_awesome_rounded,
+                    color: theme.colorScheme.onPrimary,
+                    size: 32,
+                  ),
                 ),
               ),
             ),
-            const SizedBox(height: 22),
+            const SizedBox(height: 20),
             FadeInUp(
               duration: const Duration(milliseconds: 400),
               delay: const Duration(milliseconds: 80),
@@ -620,6 +604,13 @@ class _EmptyState extends StatelessWidget {
                       border: Border.all(
                         color: theme.colorScheme.outlineVariant.withOpacity(0.4),
                       ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: theme.colorScheme.shadow.withOpacity(0.04),
+                          blurRadius: 8,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
                     ),
                     child: Row(
                       children: [

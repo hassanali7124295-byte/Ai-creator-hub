@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../core/theme/chat_palette.dart';
+
 /// The kind of attachment source the user picked from [showAttachmentSheet].
 enum AttachmentType { gallery, camera, document, file }
 
@@ -24,6 +26,9 @@ const List<_AttachmentOption> _options = [
 /// [AttachmentType], or `null` if the sheet was dismissed.
 Future<AttachmentType?> showAttachmentSheet(BuildContext context) {
   final theme = Theme.of(context);
+  // Icon accents always use the same Emerald palette as the chat screen
+  // itself, regardless of which context this sheet was opened from.
+  final accent = ChatPalette.colorSchemeFor(context);
 
   return showModalBottomSheet<AttachmentType>(
     context: context,
@@ -61,15 +66,27 @@ Future<AttachmentType?> showAttachmentSheet(BuildContext context) {
               for (final option in _options)
                 ListTile(
                   contentPadding: EdgeInsets.zero,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
                   leading: Container(
-                    padding: const EdgeInsets.all(10),
+                    padding: const EdgeInsets.all(11),
                     decoration: BoxDecoration(
-                      color: theme.colorScheme.primary.withOpacity(0.1),
+                      color: accent.primary.withOpacity(0.12),
                       shape: BoxShape.circle,
                     ),
-                    child: Icon(option.icon, color: theme.colorScheme.primary),
+                    child: Icon(option.icon, color: accent.primary, size: 22),
                   ),
-                  title: Text(option.label, style: theme.textTheme.bodyLarge),
+                  title: Text(
+                    option.label,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  trailing: Icon(
+                    Icons.chevron_right_rounded,
+                    color: theme.colorScheme.onSurfaceVariant.withOpacity(0.5),
+                  ),
                   onTap: () => Navigator.of(sheetContext).pop(option.type),
                 ),
             ],

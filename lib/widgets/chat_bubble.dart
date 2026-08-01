@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
@@ -30,6 +32,16 @@ class ChatBubble extends StatefulWidget {
   /// Whether this specific message is the one currently being read aloud.
   final bool isSpeaking;
 
+  /// When true (and this is a fresh, non-error AI reply), the reply text
+  /// is revealed gradually — a lightweight, client-side "streaming" effect
+  /// — instead of appearing all at once. Historical replies loaded from
+  /// storage pass `false` so they render instantly, as before.
+  final bool animate;
+
+  /// Invoked on every reveal tick while streaming, so the screen can keep
+  /// the list pinned to the bottom as the reply grows. Safe to leave null.
+  final VoidCallback? onStreamTick;
+
   const ChatBubble({
     super.key,
     required this.message,
@@ -38,6 +50,8 @@ class ChatBubble extends StatefulWidget {
     this.onRegenerate,
     this.onReadAloud,
     this.isSpeaking = false,
+    this.animate = false,
+    this.onStreamTick,
   });
 
   @override
@@ -50,6 +64,63 @@ class _ChatBubbleState extends State<ChatBubble> {
   // Local-only UI feedback (not persisted) — a lightweight way to let
   // people react to a reply without a backend to send it to.
   _Feedback _feedback = _Feedback.none;
+
+  // --- Streaming reveal state -------------------------------------------
+  Timer? _streamTimer;
+  int _visibleChars = 0;
+  bool _streaming = false;
+
+  bool get _isAiReply => !widget.message.isUser && !widget.message.isError;
+
+  @override
+  void initState() {
+    super.initState();
+    _startOrSkipStreaming();
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatBubble oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // A different message landed in this slot (e.g. Regenerate swapped
+    // the reply at the same list index) — restart the reveal for it.
+    if (!identical(oldWidget.message, widget.message)) {
+      _streamTimer?.cancel();
+      _startOrSkipStreaming();
+    }
+  }
+
+  void _startOrSkipStreaming() {
+    final length = widget.message.text.length;
+    if (_isAiReply && widget.animate && length > 0) {
+      _visibleChars = 0;
+      _streaming = true;
+      const chunk = 4; // characters revealed per tick — smooth, cheap
+      _streamTimer = Timer.periodic(const Duration(milliseconds: 14), (timer) {
+        if (!mounted) {
+          timer.cancel();
+          return;
+        }
+        setState(() {
+          _visibleChars += chunk;
+          if (_visibleChars > length) _visibleChars = length;
+        });
+        widget.onStreamTick?.call();
+        if (_visibleChars >= length) {
+          timer.cancel();
+          setState(() => _streaming = false);
+        }
+      });
+    } else {
+      _visibleChars = length;
+      _streaming = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _streamTimer?.cancel();
+    super.dispose();
+  }
 
   void _toggleLike() {
     setState(() {
@@ -80,7 +151,7 @@ class _ChatBubbleState extends State<ChatBubble> {
     final theme = Theme.of(context);
     final message = widget.message;
     final isUser = message.isUser;
-    final isAiReply = !isUser && !message.isError;
+    final isAiReply = _isAiReply;
 
     final bubbleColor = message.isError
         ? theme.colorScheme.errorContainer
@@ -94,6 +165,17 @@ class _ChatBubbleState extends State<ChatBubble> {
             ? theme.colorScheme.onPrimary
             : theme.colorScheme.onSurface;
 
+    // While streaming, only the revealed slice of the reply is rendered.
+    int safeVisible = _visibleChars;
+    if (safeVisible > message.text.length) safeVisible = message.text.length;
+    if (safeVisible < 0) safeVisible = 0;
+    final displayedText =
+        isAiReply ? message.text.substring(0, safeVisible) : message.text;
+
+    // Actions only appear once a reply has fully streamed in, matching the
+    // feel of premium AI chat apps and avoiding layout churn mid-reveal.
+    final showActions = isAiReply && !_streaming;
+
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Column(
@@ -103,7 +185,9 @@ class _ChatBubbleState extends State<ChatBubble> {
         children: [
           Container(
             margin: const EdgeInsets.only(top: 8),
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+            padding: isAiReply
+                ? const EdgeInsets.symmetric(horizontal: 20, vertical: 16)
+                : const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
             constraints: BoxConstraints(
               maxWidth: MediaQuery.of(context).size.width * 0.8,
             ),
@@ -115,12 +199,18 @@ class _ChatBubbleState extends State<ChatBubble> {
                 bottomLeft: Radius.circular(isUser ? 20 : 6),
                 bottomRight: Radius.circular(isUser ? 6 : 20),
               ),
+              border: isAiReply
+                  ? Border.all(
+                      color: theme.colorScheme.outlineVariant.withOpacity(0.3),
+                      width: 1,
+                    )
+                  : null,
               boxShadow: isAiReply
                   ? [
                       BoxShadow(
-                        color: theme.colorScheme.shadow.withOpacity(0.05),
-                        blurRadius: 10,
-                        offset: const Offset(0, 3),
+                        color: theme.colorScheme.shadow.withOpacity(0.06),
+                        blurRadius: 14,
+                        offset: const Offset(0, 4),
                       ),
                     ]
                   : null,
@@ -168,13 +258,14 @@ class _ChatBubbleState extends State<ChatBubble> {
                 // spacing for readability; user/error text stays plain.
                 if (isAiReply)
                   MarkdownBody(
-                    data: message.text,
+                    data: displayedText,
                     selectable: true,
                     styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
                       p: theme.textTheme.bodyLarge?.copyWith(
                         color: textColor,
                         fontSize: 17.5,
-                        height: 1.55,
+                        height: 1.6,
+                        letterSpacing: 0.1,
                       ),
                       code: theme.textTheme.bodySmall?.copyWith(
                         color: textColor,
@@ -187,6 +278,7 @@ class _ChatBubbleState extends State<ChatBubble> {
                         borderRadius: BorderRadius.circular(10),
                       ),
                       codeblockPadding: const EdgeInsets.all(12),
+                      blockSpacing: 10,
                     ),
                   )
                 else
@@ -197,52 +289,59 @@ class _ChatBubbleState extends State<ChatBubble> {
               ],
             ),
           ),
-          if (isAiReply)
+          if (showActions)
             Padding(
-              padding: const EdgeInsets.only(top: 2, left: 6),
-              child: Wrap(
-                spacing: 0,
-                children: [
-                  _ActionIcon(
-                    icon: Icons.copy_rounded,
-                    tooltip: 'Copy',
-                    onTap: widget.onCopy,
-                  ),
-                  _ActionIcon(
-                    icon: Icons.ios_share_rounded,
-                    tooltip: 'Share',
-                    onTap: widget.onShare,
-                  ),
-                  _ActionIcon(
-                    icon: Icons.refresh_rounded,
-                    tooltip: 'Regenerate',
-                    onTap: widget.onRegenerate,
-                  ),
-                  _ActionIcon(
-                    icon: widget.isSpeaking
-                        ? Icons.stop_circle_rounded
-                        : Icons.volume_up_rounded,
-                    tooltip: widget.isSpeaking ? 'Stop' : 'Read aloud',
-                    onTap: widget.onReadAloud,
-                    active: widget.isSpeaking,
-                  ),
-                  _ActionIcon(
-                    icon: _feedback == _Feedback.liked
-                        ? Icons.thumb_up_rounded
-                        : Icons.thumb_up_outlined,
-                    tooltip: 'Like',
-                    onTap: _toggleLike,
-                    active: _feedback == _Feedback.liked,
-                  ),
-                  _ActionIcon(
-                    icon: _feedback == _Feedback.disliked
-                        ? Icons.thumb_down_rounded
-                        : Icons.thumb_down_outlined,
-                    tooltip: 'Dislike',
-                    onTap: _toggleDislike,
-                    active: _feedback == _Feedback.disliked,
-                  ),
-                ],
+              padding: const EdgeInsets.only(top: 4, left: 4),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHigh.withOpacity(0.55),
+                  borderRadius: BorderRadius.circular(22),
+                ),
+                child: Wrap(
+                  spacing: 1,
+                  children: [
+                    _ActionIcon(
+                      icon: Icons.copy_rounded,
+                      tooltip: 'Copy',
+                      onTap: widget.onCopy,
+                    ),
+                    _ActionIcon(
+                      icon: Icons.ios_share_rounded,
+                      tooltip: 'Share',
+                      onTap: widget.onShare,
+                    ),
+                    _ActionIcon(
+                      icon: Icons.refresh_rounded,
+                      tooltip: 'Regenerate',
+                      onTap: widget.onRegenerate,
+                    ),
+                    _ActionIcon(
+                      icon: widget.isSpeaking
+                          ? Icons.stop_circle_rounded
+                          : Icons.volume_up_rounded,
+                      tooltip: widget.isSpeaking ? 'Stop' : 'Read aloud',
+                      onTap: widget.onReadAloud,
+                      active: widget.isSpeaking,
+                    ),
+                    _ActionIcon(
+                      icon: _feedback == _Feedback.liked
+                          ? Icons.thumb_up_rounded
+                          : Icons.thumb_up_outlined,
+                      tooltip: 'Like',
+                      onTap: _toggleLike,
+                      active: _feedback == _Feedback.liked,
+                    ),
+                    _ActionIcon(
+                      icon: _feedback == _Feedback.disliked
+                          ? Icons.thumb_down_rounded
+                          : Icons.thumb_down_outlined,
+                      tooltip: 'Dislike',
+                      onTap: _toggleDislike,
+                      active: _feedback == _Feedback.disliked,
+                    ),
+                  ],
+                ),
               ),
             ),
         ],
@@ -285,8 +384,8 @@ class _ActionIcon extends StatelessWidget {
           customBorder: const CircleBorder(),
           onTap: onTap,
           child: Padding(
-            padding: const EdgeInsets.all(7),
-            child: Icon(icon, size: 17, color: color),
+            padding: const EdgeInsets.all(9),
+            child: Icon(icon, size: 18, color: color),
           ),
         ),
       ),
