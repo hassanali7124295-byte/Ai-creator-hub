@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:animate_do/animate_do.dart';
+import 'package:flutter_tts/flutter_tts.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../core/services/attachment_processor_service.dart';
 import '../core/services/attachment_service.dart';
@@ -51,11 +53,26 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _hasApiKey = true; // assume true until checked, to avoid a flash
   _PendingAttachment? _pendingAttachment;
 
+  // Read Aloud (Step 10): on-device TTS for AI replies. `_speakingIndex`
+  // tracks which message (if any) is currently being read, so only one
+  // bubble shows the "stop" state at a time.
+  final FlutterTts _tts = FlutterTts();
+  int? _speakingIndex;
+
   @override
   void initState() {
     super.initState();
     _loadHistory();
     _checkApiKey();
+    _tts.setCompletionHandler(() {
+      if (mounted) setState(() => _speakingIndex = null);
+    });
+    _tts.setCancelHandler(() {
+      if (mounted) setState(() => _speakingIndex = null);
+    });
+    _tts.setErrorHandler((_) {
+      if (mounted) setState(() => _speakingIndex = null);
+    });
   }
 
   Future<void> _loadHistory() async {
@@ -78,6 +95,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _inputController.dispose();
     _scrollController.dispose();
+    _tts.stop();
     super.dispose();
   }
 
@@ -194,6 +212,78 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  void _shareMessage(String text) {
+    Share.share(text);
+  }
+
+  /// Starts reading [text] aloud, or stops if [index] is already speaking.
+  /// Only one message plays at a time — starting a new one cancels any
+  /// reply currently being read.
+  Future<void> _toggleSpeak(int index, String text) async {
+    if (_speakingIndex == index) {
+      await _tts.stop();
+      if (mounted) setState(() => _speakingIndex = null);
+      return;
+    }
+    await _tts.stop();
+    if (!mounted) return;
+    setState(() => _speakingIndex = index);
+    await _tts.speak(text);
+  }
+
+  /// Re-asks Gemini for a fresh reply to the user prompt that produced the
+  /// AI message at [aiIndex], replacing that message in place. Only
+  /// offered for the most recent AI reply (see the `canRegenerate` check
+  /// at the call site).
+  Future<void> _regenerateResponse(int aiIndex) async {
+    if (_isSending) return;
+    if (aiIndex < 1 || aiIndex >= _messages.length) return;
+    final userMessage = _messages[aiIndex - 1];
+    if (!userMessage.isUser) return;
+
+    if (_speakingIndex != null) {
+      await _tts.stop();
+      _speakingIndex = null;
+    }
+
+    setState(() {
+      _messages.removeAt(aiIndex);
+      _isSending = true;
+    });
+    _scrollToBottom();
+
+    try {
+      final history = _messages
+          .sublist(0, aiIndex - 1)
+          .where((m) => !m.isError)
+          .map((m) => {'role': m.isUser ? 'user' : 'model', 'text': m.text})
+          .toList();
+
+      final reply = await GeminiService.sendMessage(
+        userMessage.text,
+        history: history,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _messages.insert(aiIndex, ChatMessage(text: reply, isUser: false));
+      });
+    } on GeminiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _messages.insert(
+          aiIndex,
+          ChatMessage(text: e.message, isUser: false, isError: true),
+        );
+      });
+      _checkApiKey();
+    } finally {
+      if (mounted) setState(() => _isSending = false);
+      _scrollToBottom();
+      unawaited(ChatStorageService.saveMessages(_messages));
+    }
+  }
+
   Future<void> _clearChat() async {
     setState(() => _messages.clear());
     await ChatStorageService.clearMessages();
@@ -276,63 +366,125 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    // Chat UI runs its own premium "Emerald + Graphite" palette, scoped to
+    // this screen's subtree only — the rest of the app keeps the default
+    // theme from app_theme.dart untouched.
+    final theme = _ChatPalette.themeFor(context);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('AI Chat'),
-        actions: [
-          if (_messages.isNotEmpty)
-            IconButton(
-              tooltip: 'Clear chat',
-              icon: const Icon(Icons.delete_outline_rounded),
-              onPressed: _clearChat,
+    return Theme(
+      data: theme,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('AI Chat'),
+          actions: [
+            if (_messages.isNotEmpty)
+              IconButton(
+                tooltip: 'Clear chat',
+                icon: const Icon(Icons.delete_outline_rounded),
+                onPressed: _clearChat,
+              ),
+          ],
+        ),
+        body: Column(
+          children: [
+            if (!_hasApiKey) _ApiKeyBanner(onSetUp: _openSettings),
+            Expanded(
+              child: _isLoadingHistory
+                  ? const Center(child: CircularProgressIndicator())
+                  : _messages.isEmpty
+                      ? _EmptyState(theme: theme)
+                      : ListView.builder(
+                          controller: _scrollController,
+                          padding: const EdgeInsets.all(16),
+                          itemCount: _messages.length + (_isSending ? 1 : 0),
+                          itemBuilder: (context, index) {
+                            if (index == _messages.length) {
+                              return const TypingIndicator();
+                            }
+                            final message = _messages[index];
+                            final isAiReply = !message.isUser && !message.isError;
+                            final isLast = index == _messages.length - 1;
+                            return GestureDetector(
+                              onLongPress: () => _copyMessage(message.text),
+                              child: ChatBubble(
+                                message: message,
+                                onCopy: isAiReply
+                                    ? () => _copyMessage(message.text)
+                                    : null,
+                                onShare: isAiReply
+                                    ? () => _shareMessage(message.text)
+                                    : null,
+                                onRegenerate: isAiReply && isLast && !_isSending
+                                    ? () => _regenerateResponse(index)
+                                    : null,
+                                onReadAloud: isAiReply
+                                    ? () => _toggleSpeak(index, message.text)
+                                    : null,
+                                isSpeaking: _speakingIndex == index,
+                              ),
+                            );
+                          },
+                        ),
             ),
-        ],
-      ),
-      body: Column(
-        children: [
-          if (!_hasApiKey) _ApiKeyBanner(onSetUp: _openSettings),
-          Expanded(
-            child: _isLoadingHistory
-                ? const Center(child: CircularProgressIndicator())
-                : _messages.isEmpty
-                    ? _EmptyState(theme: theme)
-                    : ListView.builder(
-                        controller: _scrollController,
-                        padding: const EdgeInsets.all(16),
-                        itemCount: _messages.length + (_isSending ? 1 : 0),
-                        itemBuilder: (context, index) {
-                          if (index == _messages.length) {
-                            return const TypingIndicator();
-                          }
-                          final message = _messages[index];
-                          return GestureDetector(
-                            onLongPress: () => _copyMessage(message.text),
-                            child: ChatBubble(message: message),
-                          );
-                        },
-                      ),
-          ),
-          if (_pendingAttachment != null)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: AttachmentPreview(
-                  attachment: _pendingAttachment!.previewMeta,
-                  onRemove: _isSending ? null : _removePendingAttachment,
+            if (_pendingAttachment != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: AttachmentPreview(
+                    attachment: _pendingAttachment!.previewMeta,
+                    onRemove: _isSending ? null : _removePendingAttachment,
+                  ),
                 ),
               ),
+            _ChatInputBar(
+              controller: _inputController,
+              isSending: _isSending,
+              onSend: _sendMessage,
+              onAttachment: _openAttachmentSheet,
+              onVoice: _onVoiceTap,
             ),
-          _ChatInputBar(
-            controller: _inputController,
-            isSending: _isSending,
-            onSend: _sendMessage,
-            onAttachment: _openAttachmentSheet,
-            onVoice: _onVoiceTap,
-          ),
-        ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Chat-only "Emerald + Graphite" palette — a more premium alternative to
+/// the app-wide Material purple, scoped strictly to [ChatScreen] via a
+/// local [Theme] override so every other screen keeps using
+/// `AppTheme.lightTheme` / `AppTheme.darkTheme` unchanged.
+class _ChatPalette {
+  _ChatPalette._();
+
+  static const Color _emeraldLight = Color(0xFF059669); // emerald-600
+  static const Color _emeraldDark = Color(0xFF34D399); // emerald-400
+  static const Color _graphite = Color(0xFF37474F); // blue-graphite 800
+
+  static ThemeData themeFor(BuildContext context) {
+    final base = Theme.of(context);
+    final isDark = base.brightness == Brightness.dark;
+
+    final scheme = ColorScheme.fromSeed(
+      seedColor: isDark ? _emeraldDark : _emeraldLight,
+      brightness: base.brightness,
+    ).copyWith(secondary: _graphite);
+
+    return base.copyWith(
+      colorScheme: scheme,
+      scaffoldBackgroundColor: scheme.surface,
+      appBarTheme: base.appBarTheme.copyWith(
+        backgroundColor: Colors.transparent,
+        iconTheme: IconThemeData(color: scheme.onSurface),
+        titleTextStyle: base.appBarTheme.titleTextStyle?.copyWith(
+          color: scheme.onSurface,
+        ),
+      ),
+      textSelectionTheme: TextSelectionThemeData(
+        cursorColor: scheme.primary,
+        selectionColor: scheme.primary.withOpacity(0.3),
+        selectionHandleColor: scheme.primary,
       ),
     );
   }
@@ -397,18 +549,25 @@ class _EmptyState extends StatelessWidget {
             FadeIn(
               duration: const Duration(milliseconds: 400),
               child: Container(
-                width: 72,
-                height: 72,
+                width: 76,
+                height: 76,
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                     colors: [
                       theme.colorScheme.primary,
-                      theme.colorScheme.secondary,
+                      theme.colorScheme.primary.withOpacity(0.7),
                     ],
                   ),
                   shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: theme.colorScheme.primary.withOpacity(0.28),
+                      blurRadius: 24,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
                 ),
                 child: Icon(
                   Icons.auto_awesome_rounded,
@@ -417,7 +576,7 @@ class _EmptyState extends StatelessWidget {
                 ),
               ),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 22),
             FadeInUp(
               duration: const Duration(milliseconds: 400),
               delay: const Duration(milliseconds: 80),
@@ -425,6 +584,7 @@ class _EmptyState extends StatelessWidget {
                 'AI Assistant',
                 style: theme.textTheme.headlineSmall?.copyWith(
                   fontWeight: FontWeight.w700,
+                  letterSpacing: -0.3,
                 ),
               ),
             ),
@@ -447,14 +607,38 @@ class _EmptyState extends StatelessWidget {
                 duration: const Duration(milliseconds: 400),
                 delay: Duration(milliseconds: 170 + index * 60),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 7),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(icon, size: 18, color: theme.colorScheme.primary),
-                      const SizedBox(width: 10),
-                      Text(label, style: theme.textTheme.bodyMedium),
-                    ],
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 18,
+                      vertical: 14,
+                    ),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceContainerHigh,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: theme.colorScheme.outlineVariant.withOpacity(0.4),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.primary.withOpacity(0.12),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            icon,
+                            size: 18,
+                            color: theme.colorScheme.primary,
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        Text(label, style: theme.textTheme.bodyMedium),
+                      ],
+                    ),
                   ),
                 ),
               );
@@ -553,28 +737,32 @@ class _ChatInputBar extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            Material(
-              color: theme.colorScheme.primary,
-              shape: const CircleBorder(),
-              child: InkWell(
-                customBorder: const CircleBorder(),
-                onTap: isSending ? null : onSend,
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: isSending
-                      ? SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2.2,
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Material(
+                color: theme.colorScheme.primary,
+                shape: const CircleBorder(),
+                elevation: 0,
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: isSending ? null : onSend,
+                  child: Padding(
+                    padding: const EdgeInsets.all(11),
+                    child: isSending
+                        ? SizedBox(
+                            width: 17,
+                            height: 17,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: theme.colorScheme.onPrimary,
+                            ),
+                          )
+                        : Icon(
+                            Icons.arrow_upward_rounded,
                             color: theme.colorScheme.onPrimary,
+                            size: 20,
                           ),
-                        )
-                      : Icon(
-                          Icons.arrow_upward_rounded,
-                          color: theme.colorScheme.onPrimary,
-                          size: 20,
-                        ),
+                  ),
                 ),
               ),
             ),
