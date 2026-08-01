@@ -27,37 +27,48 @@ class _MainNavigationState extends State<MainNavigation> {
     SettingsScreen(),
   ];
 
-  final List<({IconData icon, IconData selectedIcon, String label})>
+  // Step 12.1: each tab now carries its own accent color, applied to its
+  // icon and selection indicator only when active — everything else
+  // (order, screens, navigation logic) is unchanged.
+  final List<({IconData icon, IconData selectedIcon, String label, Color accent})>
       _destinations = const [
     (
       icon: Icons.home_outlined,
       selectedIcon: Icons.home_rounded,
       label: 'Home',
+      accent: Color(0xFF6C5CE7), // matches the app's default violet
     ),
     (
       icon: Icons.chat_bubble_outline_rounded,
       selectedIcon: Icons.chat_bubble_rounded,
       label: 'Chat',
+      accent: Color(0xFF10B981), // emerald
     ),
     (
       icon: Icons.auto_awesome_outlined,
       selectedIcon: Icons.auto_awesome_rounded,
       label: 'Tools',
+      accent: Color(0xFFFB923C), // orange
     ),
     (
       icon: Icons.person_outline_rounded,
       selectedIcon: Icons.person_rounded,
       label: 'Profile',
+      accent: Color(0xFF3B82F6), // blue
     ),
     (
       icon: Icons.settings_outlined,
       selectedIcon: Icons.settings_rounded,
       label: 'Settings',
+      accent: Color(0xFF9CA3AF), // gray
     ),
   ];
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final selectedAccent = _destinations[_currentIndex].accent;
+
     return Scaffold(
       body: IndexedStack(
         index: _currentIndex,
@@ -65,15 +76,24 @@ class _MainNavigationState extends State<MainNavigation> {
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,
+        // Overridden per selection so the pill indicator matches the
+        // active tab's own accent instead of one fixed app-wide color.
+        indicatorColor: selectedAccent.withOpacity(0.16),
         onDestinationSelected: (index) {
           setState(() => _currentIndex = index);
         },
         destinations: [
-          for (final d in _destinations)
+          for (int i = 0; i < _destinations.length; i++)
             NavigationDestination(
-              icon: Icon(d.icon),
-              selectedIcon: Icon(d.selectedIcon),
-              label: d.label,
+              icon: Icon(
+                _destinations[i].icon,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+              selectedIcon: Icon(
+                _destinations[i].selectedIcon,
+                color: _destinations[i].accent,
+              ),
+              label: _destinations[i].label,
             ),
         ],
       ),

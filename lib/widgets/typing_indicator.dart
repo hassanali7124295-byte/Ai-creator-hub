@@ -58,35 +58,25 @@ class _TypingIndicatorState extends State<TypingIndicator>
             return Row(
               mainAxisSize: MainAxisSize.min,
               children: List.generate(3, (index) {
-                final double delay = index * 0.18;
+                // Soft, ChatGPT-style fade: each dot pulses opacity only —
+                // no bounce or scale — with a gentle stagger between dots
+                // for an elegant, unhurried motion.
+                final double delay = index * 0.2;
                 final double raw = _controller.value - delay;
-                // Fractional part of `raw`, always between 0 (inclusive)
-                // and 1 (exclusive) — works for negative `raw` too (early
-                // frames before a dot's delay has elapsed).
                 final double t = raw - raw.floorToDouble();
-                // Smooth ease-in-out bounce instead of a linear ramp, so
-                // each dot glides up and settles rather than ticking.
                 final double wave = t < 0.5 ? t * 2 : (1 - t) * 2;
                 final double eased = Curves.easeInOutSine.transform(wave);
-                final double lift = eased * 5;
-                final double scale = 0.75 + (eased * 0.35);
-                double opacity = 0.45 + (eased * 0.55);
+                double opacity = 0.28 + (eased * 0.62);
                 if (opacity > 1.0) opacity = 1.0;
                 if (opacity < 0.0) opacity = 0.0;
                 return Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 3.5),
-                  child: Transform.translate(
-                    offset: Offset(0, -lift),
-                    child: Transform.scale(
-                      scale: scale,
-                      child: Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: theme.colorScheme.primary.withOpacity(opacity),
-                        ),
-                      ),
+                  child: Container(
+                    width: 7.5,
+                    height: 7.5,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: theme.colorScheme.primary.withOpacity(opacity),
                     ),
                   ),
                 );

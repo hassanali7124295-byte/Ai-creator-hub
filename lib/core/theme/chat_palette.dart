@@ -14,8 +14,11 @@ import 'package:flutter/material.dart';
 class ChatPalette {
   ChatPalette._();
 
-  static const Color emeraldLight = Color(0xFF059669); // emerald-600
-  static const Color emeraldDark = Color(0xFF34D399); // emerald-400
+  // Step 12.1: lightened from emerald-600/emerald-400 to a softer,
+  // more premium emerald-500/emerald-300 pairing — the old emerald-600
+  // read as too dark/heavy against surfaces in both light and dark mode.
+  static const Color emeraldLight = Color(0xFF10B981); // emerald-500
+  static const Color emeraldDark = Color(0xFF6EE7B7); // emerald-300
   static const Color graphite = Color(0xFF37474F); // blue-graphite 800
 
   static ThemeData themeFor(BuildContext context) {

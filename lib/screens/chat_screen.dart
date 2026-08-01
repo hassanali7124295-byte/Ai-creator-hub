@@ -458,17 +458,39 @@ class _ChatScreenState extends State<ChatScreen> {
           onNewChat: _startNewChat,
         ),
         appBar: AppBar(
-          title: Text(_isLoadingHistory ? 'AI Chat' : conversationTitle),
+          leadingWidth: 56,
+          leading: Builder(
+            builder: (context) => IconButton(
+              tooltip: 'Menu',
+              icon: const Icon(Icons.menu_rounded),
+              iconSize: 22,
+              splashRadius: 22,
+              onPressed: () => Scaffold.of(context).openDrawer(),
+            ),
+          ),
+          titleSpacing: 0,
+          title: Text(
+            _isLoadingHistory ? 'AI Chat' : conversationTitle,
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+              letterSpacing: -0.2,
+            ),
+            overflow: TextOverflow.ellipsis,
+          ),
           actions: [
             IconButton(
               tooltip: 'New chat',
               icon: const Icon(Icons.add_comment_outlined),
+              iconSize: 22,
+              splashRadius: 22,
               onPressed: _startNewChat,
             ),
             if (_messages.isNotEmpty)
               IconButton(
                 tooltip: 'Clear chat',
                 icon: const Icon(Icons.delete_outline_rounded),
+                iconSize: 22,
+                splashRadius: 22,
                 onPressed: _clearChat,
               ),
           ],
@@ -502,7 +524,10 @@ class _ChatScreenState extends State<ChatScreen> {
                                 final isAiReply =
                                     !message.isUser && !message.isError;
                                 final isLast = index == _messages.length - 1;
-                                return GestureDetector(
+                                return FadeInUp(
+                                  duration: const Duration(milliseconds: 220),
+                                  from: 8,
+                                  child: GestureDetector(
                                   onLongPress: () => _copyMessage(message.text),
                                   child: ChatBubble(
                                     message: message,
@@ -523,6 +548,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                     animate:
                                         identical(message, _streamingMessage),
                                     onStreamTick: _scrollToBottom,
+                                  ),
                                   ),
                                 );
                               },
@@ -667,7 +693,7 @@ class _EmptyState extends StatelessWidget {
               duration: const Duration(milliseconds: 400),
               delay: const Duration(milliseconds: 130),
               child: Text(
-                'Your intelligent AI companion.',
+                'What can I do for you?',
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
@@ -734,7 +760,7 @@ class _EmptyState extends StatelessWidget {
 /// Modern, rounded message bar in the style of ChatGPT/Gemini: a circular
 /// attachment ("+") button, a pill-shaped text field with an inline mic
 /// button, and a circular send button.
-class _ChatInputBar extends StatelessWidget {
+class _ChatInputBar extends StatefulWidget {
   final TextEditingController controller;
   final bool isSending;
   final VoidCallback onSend;
@@ -750,104 +776,169 @@ class _ChatInputBar extends StatelessWidget {
   });
 
   @override
+  State<_ChatInputBar> createState() => _ChatInputBarState();
+}
+
+class _ChatInputBarState extends State<_ChatInputBar> {
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_onTextChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_onTextChanged);
+    super.dispose();
+  }
+
+  void _onTextChanged() => setState(() {});
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final controller = widget.controller;
+    final isSending = widget.isSending;
+    final onSend = widget.onSend;
+    final onAttachment = widget.onAttachment;
+    final onVoice = widget.onVoice;
+
+    final hasText = controller.text.trim().isNotEmpty;
 
     return SafeArea(
       top: false,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Material(
-              color: theme.colorScheme.surfaceContainerHigh,
-              shape: const CircleBorder(),
-              child: InkWell(
-                customBorder: const CircleBorder(),
-                onTap: onAttachment,
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Icon(
-                    Icons.add_rounded,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
+        // Step 12.1: the whole bar is now one rounded, shadowed pill —
+        // "+" button, text field, mic, and send all live inside it, like
+        // Meta AI — instead of a separate circular "+" button floating
+        // outside the field.
+        child: Container(
+          constraints: const BoxConstraints(minHeight: 52),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surfaceContainerHigh,
+            borderRadius: BorderRadius.circular(28),
+            boxShadow: [
+              BoxShadow(
+                color: theme.colorScheme.shadow.withOpacity(0.10),
+                blurRadius: 18,
+                offset: const Offset(0, 6),
               ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Container(
-                constraints: const BoxConstraints(minHeight: 48),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.surfaceContainerHigh,
-                  borderRadius: BorderRadius.circular(26),
-                ),
-                padding: const EdgeInsets.only(left: 18, right: 4),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: controller,
-                        minLines: 1,
-                        maxLines: 5,
-                        textInputAction: TextInputAction.send,
-                        onSubmitted: (_) => onSend(),
-                        decoration: const InputDecoration(
-                          hintText: 'Message AI Assistant…',
-                          border: InputBorder.none,
-                          enabledBorder: InputBorder.none,
-                          focusedBorder: InputBorder.none,
-                          filled: false,
-                          isCollapsed: true,
-                          contentPadding: EdgeInsets.symmetric(vertical: 14),
+            ],
+          ),
+          padding: const EdgeInsets.only(left: 4, right: 4),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(bottom: 2),
+                child: Tooltip(
+                  message: 'Add attachment',
+                  child: Material(
+                    color: Colors.transparent,
+                    shape: const CircleBorder(),
+                    child: InkWell(
+                      customBorder: const CircleBorder(),
+                      onTap: onAttachment,
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Icon(
+                          Icons.add_rounded,
+                          color: theme.colorScheme.onSurfaceVariant,
                         ),
                       ),
                     ),
-                    IconButton(
-                      tooltip: 'Voice input',
-                      icon: Icon(
-                        Icons.mic_none_rounded,
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                      onPressed: onVoice,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: Material(
-                color: theme.colorScheme.primary,
-                shape: const CircleBorder(),
-                elevation: 0,
-                child: InkWell(
-                  customBorder: const CircleBorder(),
-                  onTap: isSending ? null : onSend,
-                  child: Padding(
-                    padding: const EdgeInsets.all(11),
-                    child: isSending
-                        ? SizedBox(
-                            width: 17,
-                            height: 17,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: theme.colorScheme.onPrimary,
-                            ),
-                          )
-                        : Icon(
-                            Icons.arrow_upward_rounded,
-                            color: theme.colorScheme.onPrimary,
-                            size: 20,
-                          ),
                   ),
                 ),
               ),
-            ),
-          ],
+              Expanded(
+                child: TextField(
+                  controller: controller,
+                  minLines: 1,
+                  maxLines: 5,
+                  textInputAction: TextInputAction.send,
+                  onSubmitted: (_) => onSend(),
+                  decoration: InputDecoration(
+                    hintText: "Let's chat...",
+                    hintStyle: TextStyle(
+                      color: theme.colorScheme.onSurfaceVariant.withOpacity(0.7),
+                    ),
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    filled: false,
+                    isCollapsed: true,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 16),
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 2),
+                child: Tooltip(
+                  message: 'Voice input',
+                  child: Material(
+                    color: Colors.transparent,
+                    shape: const CircleBorder(),
+                    child: InkWell(
+                      customBorder: const CircleBorder(),
+                      onTap: onVoice,
+                      child: Padding(
+                        padding: const EdgeInsets.all(11),
+                        child: Icon(
+                          Icons.mic_none_rounded,
+                          size: 21,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 2),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  curve: Curves.easeOut,
+                  decoration: BoxDecoration(
+                    color: hasText || isSending
+                        ? theme.colorScheme.primary
+                        : theme.colorScheme.primary.withOpacity(0.35),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Material(
+                    color: Colors.transparent,
+                    shape: const CircleBorder(),
+                    child: InkWell(
+                      customBorder: const CircleBorder(),
+                      onTap: isSending ? null : onSend,
+                      child: Padding(
+                        padding: const EdgeInsets.all(11),
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 180),
+                          child: isSending
+                              ? SizedBox(
+                                  key: const ValueKey('sending'),
+                                  width: 17,
+                                  height: 17,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: theme.colorScheme.onPrimary,
+                                  ),
+                                )
+                              : Icon(
+                                  Icons.arrow_upward_rounded,
+                                  key: const ValueKey('send'),
+                                  color: theme.colorScheme.onPrimary,
+                                  size: 20,
+                                ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

@@ -289,17 +289,25 @@ class _ChatBubbleState extends State<ChatBubble> {
               ],
             ),
           ),
-          if (showActions)
-            Padding(
-              padding: const EdgeInsets.only(top: 4, left: 4),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut,
+            alignment: Alignment.topLeft,
+            child: !showActions
+                ? const SizedBox.shrink()
+                : AnimatedOpacity(
+                    duration: const Duration(milliseconds: 180),
+                    opacity: showActions ? 1 : 0,
+                    child: Padding(
+              padding: const EdgeInsets.only(top: 2, left: 2),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+                padding: const EdgeInsets.symmetric(horizontal: 1, vertical: 1),
                 decoration: BoxDecoration(
-                  color: theme.colorScheme.surfaceContainerHigh.withOpacity(0.55),
-                  borderRadius: BorderRadius.circular(22),
+                  color: theme.colorScheme.surfaceContainerHigh.withOpacity(0.5),
+                  borderRadius: BorderRadius.circular(20),
                 ),
                 child: Wrap(
-                  spacing: 1,
+                  spacing: 0,
                   children: [
                     _ActionIcon(
                       icon: Icons.copy_rounded,
@@ -343,7 +351,9 @@ class _ChatBubbleState extends State<ChatBubble> {
                   ],
                 ),
               ),
-            ),
+                    ),
+                  ),
+          ),
         ],
       ),
     );
@@ -384,8 +394,8 @@ class _ActionIcon extends StatelessWidget {
           customBorder: const CircleBorder(),
           onTap: onTap,
           child: Padding(
-            padding: const EdgeInsets.all(9),
-            child: Icon(icon, size: 18, color: color),
+            padding: const EdgeInsets.all(7),
+            child: Icon(icon, size: 16, color: color),
           ),
         ),
       ),
