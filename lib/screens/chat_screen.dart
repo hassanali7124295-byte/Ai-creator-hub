@@ -3,18 +3,20 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:animate_do/animate_do.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../core/providers/conversation_provider.dart';
 import '../core/services/attachment_processor_service.dart';
 import '../core/services/attachment_service.dart';
 import '../core/services/gemini_service.dart';
-import '../core/services/chat_storage_service.dart';
 import '../core/theme/chat_palette.dart';
 import '../models/chat_attachment.dart';
 import '../models/chat_message.dart';
 import '../widgets/attachment_preview.dart';
 import '../widgets/attachment_sheet.dart';
 import '../widgets/chat_bubble.dart';
+import '../widgets/conversation_drawer.dart';
 import '../widgets/typing_indicator.dart';
 import 'settings_screen.dart';
 
@@ -66,6 +68,14 @@ class _ChatScreenState extends State<ChatScreen> {
   // messages restored from history, so old chats still render instantly.
   ChatMessage? _streamingMessage;
 
+  // Multi-conversation chat (Step 12): the id of the conversation currently
+  // loaded into `_messages`. Used as the AnimatedSwitcher key so switching
+  // conversations gets a soft cross-fade instead of an abrupt list swap,
+  // and to know when the conversation list drawer requests a *different*
+  // conversation than the one already open (a same-conversation tap is a
+  // no-op).
+  String? _conversationId;
+
   @override
   void initState() {
     super.initState();
@@ -83,11 +93,61 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _loadHistory() async {
-    final history = await ChatStorageService.loadMessages();
+    final provider = context.read<ConversationProvider>();
+    await provider.init(); // idempotent — no-ops if already loaded
     if (!mounted) return;
     setState(() {
-      _messages.addAll(history);
+      _messages.addAll(provider.currentMessages);
+      _conversationId = provider.currentId;
       _isLoadingHistory = false;
+    });
+    _scrollToBottom();
+  }
+
+  /// Swaps `_messages` to a different conversation's history. Stops any
+  /// in-flight TTS and streaming state first, since neither should carry
+  /// over across conversations.
+  Future<void> _switchConversation(String id) async {
+    if (id == _conversationId || _isSending) return;
+    final provider = context.read<ConversationProvider>();
+
+    if (_speakingIndex != null) {
+      await _tts.stop();
+      _speakingIndex = null;
+    }
+    await provider.selectConversation(id);
+    if (!mounted) return;
+    setState(() {
+      _messages
+        ..clear()
+        ..addAll(provider.currentMessages);
+      _conversationId = id;
+      _streamingMessage = null;
+      _pendingAttachment = null;
+    });
+    _scrollToBottom();
+  }
+
+  /// Starts a new chat: reuses the current conversation if it's still
+  /// empty, otherwise opens a brand-new one — see
+  /// [ConversationProvider.startNewConversation].
+  Future<void> _startNewChat() async {
+    if (_isSending) return;
+    final provider = context.read<ConversationProvider>();
+
+    if (_speakingIndex != null) {
+      await _tts.stop();
+      _speakingIndex = null;
+    }
+    final id = await provider.startNewConversation();
+    if (!mounted) return;
+    setState(() {
+      _messages
+        ..clear()
+        ..addAll(provider.currentMessages);
+      _conversationId = id;
+      _streamingMessage = null;
+      _pendingAttachment = null;
     });
     _scrollToBottom();
   }
@@ -150,7 +210,7 @@ class _ChatScreenState extends State<ChatScreen> {
     });
     _inputController.clear();
     _scrollToBottom();
-    unawaited(ChatStorageService.saveMessages(_messages));
+    unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
 
     try {
       // Build lightweight history from prior turns so Gemini has context.
@@ -184,7 +244,7 @@ class _ChatScreenState extends State<ChatScreen> {
     } finally {
       if (mounted) setState(() => _isSending = false);
       _scrollToBottom();
-      unawaited(ChatStorageService.saveMessages(_messages));
+      unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
     }
   }
 
@@ -291,13 +351,13 @@ class _ChatScreenState extends State<ChatScreen> {
     } finally {
       if (mounted) setState(() => _isSending = false);
       _scrollToBottom();
-      unawaited(ChatStorageService.saveMessages(_messages));
+      unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
     }
   }
 
   Future<void> _clearChat() async {
     setState(() => _messages.clear());
-    await ChatStorageService.clearMessages();
+    await context.read<ConversationProvider>().clearCurrentMessages();
   }
 
   Future<void> _openSettings() async {
@@ -382,12 +442,29 @@ class _ChatScreenState extends State<ChatScreen> {
     // theme from app_theme.dart untouched.
     final theme = ChatPalette.themeFor(context);
 
+    // A live-updating title: falls back to "AI Chat" while history is still
+    // loading, otherwise reflects the open conversation's title so a
+    // rename in the drawer is visible immediately.
+    final conversationTitle = context.select<ConversationProvider, String>(
+      (p) => p.current?.title ?? 'AI Chat',
+    );
+
     return Theme(
       data: theme,
       child: Scaffold(
+        drawer: ConversationDrawer(
+          currentId: _conversationId,
+          onSelect: _switchConversation,
+          onNewChat: _startNewChat,
+        ),
         appBar: AppBar(
-          title: const Text('AI Chat'),
+          title: Text(_isLoadingHistory ? 'AI Chat' : conversationTitle),
           actions: [
+            IconButton(
+              tooltip: 'New chat',
+              icon: const Icon(Icons.add_comment_outlined),
+              onPressed: _startNewChat,
+            ),
             if (_messages.isNotEmpty)
               IconButton(
                 tooltip: 'Clear chat',
@@ -402,42 +479,55 @@ class _ChatScreenState extends State<ChatScreen> {
             Expanded(
               child: _isLoadingHistory
                   ? const Center(child: CircularProgressIndicator())
-                  : _messages.isEmpty
-                      ? _EmptyState(theme: theme)
-                      : ListView.builder(
-                          controller: _scrollController,
-                          padding: const EdgeInsets.all(16),
-                          itemCount: _messages.length + (_isSending ? 1 : 0),
-                          itemBuilder: (context, index) {
-                            if (index == _messages.length) {
-                              return const TypingIndicator();
-                            }
-                            final message = _messages[index];
-                            final isAiReply = !message.isUser && !message.isError;
-                            final isLast = index == _messages.length - 1;
-                            return GestureDetector(
-                              onLongPress: () => _copyMessage(message.text),
-                              child: ChatBubble(
-                                message: message,
-                                onCopy: isAiReply
-                                    ? () => _copyMessage(message.text)
-                                    : null,
-                                onShare: isAiReply
-                                    ? () => _shareMessage(message.text)
-                                    : null,
-                                onRegenerate: isAiReply && isLast && !_isSending
-                                    ? () => _regenerateResponse(index)
-                                    : null,
-                                onReadAloud: isAiReply
-                                    ? () => _toggleSpeak(index, message.text)
-                                    : null,
-                                isSpeaking: _speakingIndex == index,
-                                animate: identical(message, _streamingMessage),
-                                onStreamTick: _scrollToBottom,
-                              ),
-                            );
-                          },
-                        ),
+                  : AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 220),
+                      switchInCurve: Curves.easeOut,
+                      switchOutCurve: Curves.easeIn,
+                      child: _messages.isEmpty
+                          ? _EmptyState(
+                              key: ValueKey('empty-$_conversationId'),
+                              theme: theme,
+                            )
+                          : ListView.builder(
+                              key: ValueKey('list-$_conversationId'),
+                              controller: _scrollController,
+                              padding: const EdgeInsets.all(16),
+                              itemCount:
+                                  _messages.length + (_isSending ? 1 : 0),
+                              itemBuilder: (context, index) {
+                                if (index == _messages.length) {
+                                  return const TypingIndicator();
+                                }
+                                final message = _messages[index];
+                                final isAiReply =
+                                    !message.isUser && !message.isError;
+                                final isLast = index == _messages.length - 1;
+                                return GestureDetector(
+                                  onLongPress: () => _copyMessage(message.text),
+                                  child: ChatBubble(
+                                    message: message,
+                                    onCopy: isAiReply
+                                        ? () => _copyMessage(message.text)
+                                        : null,
+                                    onShare: isAiReply
+                                        ? () => _shareMessage(message.text)
+                                        : null,
+                                    onRegenerate:
+                                        isAiReply && isLast && !_isSending
+                                            ? () => _regenerateResponse(index)
+                                            : null,
+                                    onReadAloud: isAiReply
+                                        ? () => _toggleSpeak(index, message.text)
+                                        : null,
+                                    isSpeaking: _speakingIndex == index,
+                                    animate:
+                                        identical(message, _streamingMessage),
+                                    onStreamTick: _scrollToBottom,
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
             ),
             if (_pendingAttachment != null)
               Padding(
@@ -502,7 +592,7 @@ class _ApiKeyBanner extends StatelessWidget {
 /// and a compact list of what the assistant can help with.
 class _EmptyState extends StatelessWidget {
   final ThemeData theme;
-  const _EmptyState({required this.theme});
+  const _EmptyState({super.key, required this.theme});
 
   static const List<(IconData, String)> _capabilities = [
     (Icons.help_outline_rounded, 'Ask questions'),

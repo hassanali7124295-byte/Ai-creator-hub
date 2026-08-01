@@ -4,7 +4,7 @@ An AI-powered creator assistant app built with Flutter — AI chat, image genera
 video prompt generation, script writing, and more creator tools, wrapped in a
 modern Material 3 UI.
 
-## Current status: Step 9 of the build
+## Current status: Step 12 of the build
 
 This repo now contains:
 - `pubspec.yaml` — dependencies for state management, theming, networking,
@@ -26,6 +26,36 @@ also normalizes formats like HEIC to something Gemini reliably accepts.
 PDFs and other files are sent as-is, up to 15 MB. Only the attachment on
 the current message is sent to Gemini; earlier attachments in the
 conversation are not re-uploaded on every follow-up turn.
+
+### Multi-conversation chat (Step 12)
+
+AI Chat now works like ChatGPT/Gemini instead of a single running thread:
+
+- A **conversation drawer** (swipe from the left edge, or the hamburger icon
+  the `Scaffold` shows automatically once a `drawer` is set) lists every
+  saved chat, with a search field, a **Pinned** section, and a **Recent**
+  section sorted by most-recently-updated.
+- The **"+" icon in the AI Chat app bar** (and the "New chat" button at the
+  top of the drawer) starts a new conversation — reusing the current one if
+  it's still empty, so you never end up with duplicate blank chats.
+- Conversation titles are **auto-generated from the first user message**
+  (first line, capped at 42 characters) the moment it's sent, and can be
+  overridden any time via **Rename** in a conversation's `⋮` menu.
+- **Delete** asks for confirmation first and can't be undone.
+- **Pin** keeps a conversation at the top of the drawer regardless of when
+  it was last used.
+- The **last conversation you had open is restored automatically** the next
+  time the app starts.
+- Everything — the conversation list, titles, pin state, and every
+  message/attachment inside each one — is persisted locally with
+  `shared_preferences`, the same as the rest of the app's storage.
+- Upgrading from Step 11: your existing single chat history is
+  automatically wrapped into a real (titled) conversation the first time
+  the app opens post-update — nothing is lost.
+
+All of Step 9–11's chat features (attachments, Markdown replies, streaming
+reveal, copy/share/regenerate/read-aloud, the Emerald + Graphite chat
+theme) work unchanged inside every conversation.
 
 **`android/` is intentionally not committed.** It's generated fresh by the
 CI workflow using the real `flutter create` command from Flutter **3.44.0**

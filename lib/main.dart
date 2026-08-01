@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import 'core/theme/app_theme.dart';
 import 'core/providers/theme_provider.dart';
+import 'core/providers/conversation_provider.dart';
 import 'widgets/main_navigation.dart';
 
 void main() {
@@ -20,8 +21,15 @@ class AiCreatorHubApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) => ThemeProvider(),
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => ThemeProvider()),
+        // Owns the multi-conversation chat list (Step 12) — created once
+        // here, not inside ChatScreen, so it (and the "last opened chat"
+        // it remembers) survives tab switches via MainNavigation's
+        // IndexedStack for the whole lifetime of the app.
+        ChangeNotifierProvider(create: (_) => ConversationProvider()),
+      ],
       child: Consumer<ThemeProvider>(
         builder: (context, themeProvider, _) {
           return MaterialApp(
