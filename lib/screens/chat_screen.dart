@@ -459,16 +459,20 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         appBar: AppBar(
           leadingWidth: 56,
+          scrolledUnderElevation: 0,
           leading: Builder(
-            builder: (context) => IconButton(
-              tooltip: 'Menu',
-              icon: const Icon(Icons.menu_rounded),
-              iconSize: 22,
-              splashRadius: 22,
-              onPressed: () => Scaffold.of(context).openDrawer(),
+            builder: (context) => Center(
+              child: _AppBarIconButton(
+                tooltip: 'Menu',
+                icon: Icons.menu_rounded,
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  Scaffold.of(context).openDrawer();
+                },
+              ),
             ),
           ),
-          titleSpacing: 0,
+          titleSpacing: 4,
           title: Text(
             _isLoadingHistory ? 'AI Chat' : conversationTitle,
             style: theme.textTheme.titleMedium?.copyWith(
@@ -478,21 +482,33 @@ class _ChatScreenState extends State<ChatScreen> {
             overflow: TextOverflow.ellipsis,
           ),
           actions: [
-            IconButton(
+            _AppBarIconButton(
               tooltip: 'New chat',
-              icon: const Icon(Icons.add_comment_outlined),
-              iconSize: 22,
-              splashRadius: 22,
-              onPressed: _startNewChat,
+              icon: Icons.mode_edit_outline_rounded,
+              onTap: () {
+                HapticFeedback.selectionClick();
+                _startNewChat();
+              },
             ),
-            if (_messages.isNotEmpty)
-              IconButton(
-                tooltip: 'Clear chat',
-                icon: const Icon(Icons.delete_outline_rounded),
-                iconSize: 22,
-                splashRadius: 22,
-                onPressed: _clearChat,
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 200),
+              transitionBuilder: (child, animation) => ScaleTransition(
+                scale: animation,
+                child: FadeTransition(opacity: animation, child: child),
               ),
+              child: _messages.isNotEmpty
+                  ? _AppBarIconButton(
+                      key: const ValueKey('clear-chat'),
+                      tooltip: 'Clear chat',
+                      icon: Icons.delete_outline_rounded,
+                      onTap: () {
+                        HapticFeedback.mediumImpact();
+                        _clearChat();
+                      },
+                    )
+                  : const SizedBox(width: 12, key: ValueKey('clear-chat-empty')),
+            ),
+            const SizedBox(width: 6),
           ],
         ),
         body: Column(
@@ -513,6 +529,9 @@ class _ChatScreenState extends State<ChatScreen> {
                           : ListView.builder(
                               key: ValueKey('list-$_conversationId'),
                               controller: _scrollController,
+                              physics: const BouncingScrollPhysics(
+                                parent: AlwaysScrollableScrollPhysics(),
+                              ),
                               padding: const EdgeInsets.all(16),
                               itemCount:
                                   _messages.length + (_isSending ? 1 : 0),
@@ -574,6 +593,71 @@ class _ChatScreenState extends State<ChatScreen> {
               onVoice: _onVoiceTap,
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A premium app-bar icon button: a soft rounded-square "chip" behind the
+/// icon (instead of a bare [IconButton]'s plain ripple-on-nothing look),
+/// with its own gentle press-scale for tactile feedback. Purely visual —
+/// forwards straight to [onTap].
+class _AppBarIconButton extends StatefulWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  const _AppBarIconButton({
+    super.key,
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  @override
+  State<_AppBarIconButton> createState() => _AppBarIconButtonState();
+}
+
+class _AppBarIconButtonState extends State<_AppBarIconButton> {
+  bool _pressed = false;
+
+  void _setPressed(bool value) {
+    if (_pressed != value) setState(() => _pressed = value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 3),
+      child: Tooltip(
+        message: widget.tooltip,
+        child: GestureDetector(
+          onTapDown: (_) => _setPressed(true),
+          onTapCancel: () => _setPressed(false),
+          onTapUp: (_) => _setPressed(false),
+          child: AnimatedScale(
+            scale: _pressed ? 0.90 : 1.0,
+            duration: const Duration(milliseconds: 120),
+            curve: Curves.easeOut,
+            child: Material(
+              color: theme.colorScheme.surfaceContainerHigh.withOpacity(0.7),
+              borderRadius: BorderRadius.circular(14),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(14),
+                onTap: widget.onTap,
+                child: Padding(
+                  padding: const EdgeInsets.all(9),
+                  child: Icon(
+                    widget.icon,
+                    size: 21,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -681,11 +765,12 @@ class _EmptyState extends StatelessWidget {
               duration: const Duration(milliseconds: 400),
               delay: const Duration(milliseconds: 80),
               child: Text(
-                'AI Assistant',
+                'What can I do for you?',
                 style: theme.textTheme.headlineSmall?.copyWith(
                   fontWeight: FontWeight.w700,
                   letterSpacing: -0.3,
                 ),
+                textAlign: TextAlign.center,
               ),
             ),
             const SizedBox(height: 6),
@@ -693,7 +778,7 @@ class _EmptyState extends StatelessWidget {
               duration: const Duration(milliseconds: 400),
               delay: const Duration(milliseconds: 130),
               child: Text(
-                'What can I do for you?',
+                'Ask a question, brainstorm ideas, or attach a file to begin.',
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
@@ -703,6 +788,7 @@ class _EmptyState extends StatelessWidget {
             const SizedBox(height: 28),
             ...List.generate(_capabilities.length, (index) {
               final (icon, label) = _capabilities[index];
+              final isDark = theme.brightness == Brightness.dark;
               return FadeInUp(
                 duration: const Duration(milliseconds: 400),
                 delay: Duration(milliseconds: 170 + index * 60),
@@ -710,41 +796,53 @@ class _EmptyState extends StatelessWidget {
                   padding: const EdgeInsets.only(bottom: 10),
                   child: Container(
                     width: double.infinity,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 18,
-                      vertical: 14,
-                    ),
                     decoration: BoxDecoration(
                       color: theme.colorScheme.surfaceContainerHigh,
                       borderRadius: BorderRadius.circular(16),
                       border: Border.all(
                         color: theme.colorScheme.outlineVariant.withOpacity(0.4),
                       ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: theme.colorScheme.shadow.withOpacity(0.04),
-                          blurRadius: 8,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
+                      boxShadow: isDark
+                          ? null
+                          : [
+                              BoxShadow(
+                                color: theme.colorScheme.shadow.withOpacity(0.04),
+                                blurRadius: 8,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
                     ),
-                    child: Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: theme.colorScheme.primary.withOpacity(0.12),
-                            shape: BoxShape.circle,
+                    child: Material(
+                      color: Colors.transparent,
+                      borderRadius: BorderRadius.circular(16),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: () => HapticFeedback.selectionClick(),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 18,
+                            vertical: 14,
                           ),
-                          child: Icon(
-                            icon,
-                            size: 18,
-                            color: theme.colorScheme.primary,
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: theme.colorScheme.primary.withOpacity(0.12),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: Icon(
+                                  icon,
+                                  size: 18,
+                                  color: theme.colorScheme.primary,
+                                ),
+                              ),
+                              const SizedBox(width: 14),
+                              Text(label, style: theme.textTheme.bodyMedium),
+                            ],
                           ),
                         ),
-                        const SizedBox(width: 14),
-                        Text(label, style: theme.textTheme.bodyMedium),
-                      ],
+                      ),
                     ),
                   ),
                 ),
@@ -780,19 +878,29 @@ class _ChatInputBar extends StatefulWidget {
 }
 
 class _ChatInputBarState extends State<_ChatInputBar> {
+  // Step 12.2: drives a subtle border/glow animation so the input pill
+  // visibly "wakes up" on focus, matching ChatGPT/Meta AI's composer.
+  final FocusNode _focusNode = FocusNode();
+  bool _focused = false;
+
   @override
   void initState() {
     super.initState();
     widget.controller.addListener(_onTextChanged);
+    _focusNode.addListener(_onFocusChanged);
   }
 
   @override
   void dispose() {
     widget.controller.removeListener(_onTextChanged);
+    _focusNode.removeListener(_onFocusChanged);
+    _focusNode.dispose();
     super.dispose();
   }
 
   void _onTextChanged() => setState(() {});
+
+  void _onFocusChanged() => setState(() => _focused = _focusNode.hasFocus);
 
   @override
   Widget build(BuildContext context) {
@@ -804,6 +912,7 @@ class _ChatInputBarState extends State<_ChatInputBar> {
     final onVoice = widget.onVoice;
 
     final hasText = controller.text.trim().isNotEmpty;
+    final isDark = theme.brightness == Brightness.dark;
 
     return SafeArea(
       top: false,
@@ -813,15 +922,30 @@ class _ChatInputBarState extends State<_ChatInputBar> {
         // "+" button, text field, mic, and send all live inside it, like
         // Meta AI — instead of a separate circular "+" button floating
         // outside the field.
-        child: Container(
+        // Step 12.2: the pill now animates its border and shadow when the
+        // text field gains focus, so the composer visibly "wakes up" —
+        // and the shadow eases off in dark mode, where a plain dark
+        // drop-shadow just reads as a muddy smear.
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
           constraints: const BoxConstraints(minHeight: 52),
           decoration: BoxDecoration(
             color: theme.colorScheme.surfaceContainerHigh,
             borderRadius: BorderRadius.circular(28),
+            border: Border.all(
+              color: _focused
+                  ? theme.colorScheme.primary.withOpacity(0.55)
+                  : theme.colorScheme.outlineVariant.withOpacity(0.0),
+              width: 1.4,
+            ),
             boxShadow: [
               BoxShadow(
-                color: theme.colorScheme.shadow.withOpacity(0.10),
-                blurRadius: 18,
+                color: (_focused
+                        ? theme.colorScheme.primary
+                        : theme.colorScheme.shadow)
+                    .withOpacity(isDark ? 0.06 : (_focused ? 0.16 : 0.10)),
+                blurRadius: _focused ? 22 : 18,
                 offset: const Offset(0, 6),
               ),
             ],
@@ -839,7 +963,10 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                     shape: const CircleBorder(),
                     child: InkWell(
                       customBorder: const CircleBorder(),
-                      onTap: onAttachment,
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        onAttachment();
+                      },
                       child: Padding(
                         padding: const EdgeInsets.all(12),
                         child: Icon(
@@ -854,12 +981,13 @@ class _ChatInputBarState extends State<_ChatInputBar> {
               Expanded(
                 child: TextField(
                   controller: controller,
+                  focusNode: _focusNode,
                   minLines: 1,
                   maxLines: 5,
                   textInputAction: TextInputAction.send,
                   onSubmitted: (_) => onSend(),
                   decoration: InputDecoration(
-                    hintText: "Let's chat...",
+                    hintText: 'Message AI Creator Hub...',
                     hintStyle: TextStyle(
                       color: theme.colorScheme.onSurfaceVariant.withOpacity(0.7),
                     ),
@@ -881,7 +1009,10 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                     shape: const CircleBorder(),
                     child: InkWell(
                       customBorder: const CircleBorder(),
-                      onTap: onVoice,
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        onVoice();
+                      },
                       child: Padding(
                         padding: const EdgeInsets.all(11),
                         child: Icon(
@@ -910,11 +1041,18 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                     shape: const CircleBorder(),
                     child: InkWell(
                       customBorder: const CircleBorder(),
-                      onTap: isSending ? null : onSend,
+                      onTap: isSending
+                          ? null
+                          : () {
+                              HapticFeedback.mediumImpact();
+                              onSend();
+                            },
                       child: Padding(
                         padding: const EdgeInsets.all(11),
                         child: AnimatedSwitcher(
                           duration: const Duration(milliseconds: 180),
+                          transitionBuilder: (child, animation) =>
+                              ScaleTransition(scale: animation, child: child),
                           child: isSending
                               ? SizedBox(
                                   key: const ValueKey('sending'),

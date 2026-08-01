@@ -134,13 +134,22 @@ class AppTheme {
       ),
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: colorScheme.surfaceContainerHigh,
+        surfaceTintColor: Colors.transparent,
         elevation: 0,
-        height: 68,
+        height: 72,
+        // Step 12.2: a fuller, softer indicator pill (was the Material
+        // default oval) plus a touch more label weight for a more
+        // premium, less "stock" Material 3 feel.
+        indicatorShape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(18),
+        ),
         indicatorColor: colorScheme.primary.withOpacity(0.15),
         labelTextStyle: WidgetStateProperty.resolveWith((states) {
           final selected = states.contains(WidgetState.selected);
           return textTheme.labelMedium?.copyWith(
-            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+            fontSize: 12,
+            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+            letterSpacing: 0.1,
             color: selected ? colorScheme.primary : colorScheme.onSurfaceVariant,
           );
         }),

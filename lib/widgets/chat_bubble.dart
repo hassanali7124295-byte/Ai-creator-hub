@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../models/chat_message.dart';
@@ -153,11 +154,27 @@ class _ChatBubbleState extends State<ChatBubble> {
     final isUser = message.isUser;
     final isAiReply = _isAiReply;
 
+    final isDark = theme.brightness == Brightness.dark;
+
     final bubbleColor = message.isError
         ? theme.colorScheme.errorContainer
         : isUser
             ? theme.colorScheme.primary
             : theme.colorScheme.surfaceContainerHigh;
+
+    // Step 12.2: the user bubble now carries a soft two-tone emerald
+    // gradient instead of one flat fill — a small touch that reads as
+    // noticeably more premium up close without changing the overall hue.
+    final bubbleGradient = isUser && !message.isError
+        ? LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              theme.colorScheme.primary,
+              Color.lerp(theme.colorScheme.primary, Colors.black, isDark ? 0.0 : 0.12)!,
+            ],
+          )
+        : null;
 
     final textColor = message.isError
         ? theme.colorScheme.onErrorContainer
@@ -192,7 +209,8 @@ class _ChatBubbleState extends State<ChatBubble> {
               maxWidth: MediaQuery.of(context).size.width * 0.8,
             ),
             decoration: BoxDecoration(
-              color: bubbleColor,
+              color: bubbleGradient == null ? bubbleColor : null,
+              gradient: bubbleGradient,
               borderRadius: BorderRadius.only(
                 topLeft: const Radius.circular(20),
                 topRight: const Radius.circular(20),
@@ -208,12 +226,22 @@ class _ChatBubbleState extends State<ChatBubble> {
               boxShadow: isAiReply
                   ? [
                       BoxShadow(
-                        color: theme.colorScheme.shadow.withOpacity(0.06),
+                        color: theme.colorScheme.shadow
+                            .withOpacity(isDark ? 0.0 : 0.06),
                         blurRadius: 14,
                         offset: const Offset(0, 4),
                       ),
                     ]
-                  : null,
+                  : isUser
+                      ? [
+                          BoxShadow(
+                            color: theme.colorScheme.primary
+                                .withOpacity(isDark ? 0.12 : 0.22),
+                            blurRadius: 12,
+                            offset: const Offset(0, 4),
+                          ),
+                        ]
+                      : null,
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -279,6 +307,51 @@ class _ChatBubbleState extends State<ChatBubble> {
                       ),
                       codeblockPadding: const EdgeInsets.all(12),
                       blockSpacing: 10,
+                      h1: theme.textTheme.titleLarge?.copyWith(
+                        color: textColor,
+                        fontWeight: FontWeight.w700,
+                      ),
+                      h2: theme.textTheme.titleMedium?.copyWith(
+                        color: textColor,
+                        fontWeight: FontWeight.w700,
+                      ),
+                      h3: theme.textTheme.titleSmall?.copyWith(
+                        color: textColor,
+                        fontWeight: FontWeight.w700,
+                      ),
+                      blockquoteDecoration: BoxDecoration(
+                        color: theme.colorScheme.primary.withOpacity(0.06),
+                        border: Border(
+                          left: BorderSide(
+                            color: theme.colorScheme.primary.withOpacity(0.5),
+                            width: 3,
+                          ),
+                        ),
+                      ),
+                      blockquotePadding:
+                          const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      tableHead: theme.textTheme.bodyMedium?.copyWith(
+                        color: textColor,
+                        fontWeight: FontWeight.w700,
+                      ),
+                      tableBody: theme.textTheme.bodyMedium?.copyWith(
+                        color: textColor,
+                      ),
+                      tableBorder: TableBorder.all(
+                        color: theme.colorScheme.outlineVariant.withOpacity(0.4),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      tableCellsPadding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 8,
+                      ),
+                      horizontalRuleDecoration: BoxDecoration(
+                        border: Border(
+                          top: BorderSide(
+                            color: theme.colorScheme.outlineVariant.withOpacity(0.4),
+                          ),
+                        ),
+                      ),
                     ),
                   )
                 else
@@ -363,7 +436,7 @@ class _ChatBubbleState extends State<ChatBubble> {
 /// A small, low-emphasis icon button used in the AI-reply action row.
 /// Renders dimmed and inert when [onTap] is null — e.g. "Regenerate" on
 /// any reply but the most recent one.
-class _ActionIcon extends StatelessWidget {
+class _ActionIcon extends StatefulWidget {
   final IconData icon;
   final String tooltip;
   final VoidCallback? onTap;
@@ -377,25 +450,53 @@ class _ActionIcon extends StatelessWidget {
   });
 
   @override
+  State<_ActionIcon> createState() => _ActionIconState();
+}
+
+class _ActionIconState extends State<_ActionIcon> {
+  bool _pressed = false;
+
+  void _setPressed(bool value) {
+    if (widget.onTap == null) return;
+    if (_pressed != value) setState(() => _pressed = value);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final onTap = widget.onTap;
     final color = onTap == null
         ? theme.colorScheme.onSurfaceVariant.withOpacity(0.35)
-        : active
+        : widget.active
             ? theme.colorScheme.primary
             : theme.colorScheme.onSurfaceVariant;
 
     return Tooltip(
-      message: tooltip,
-      child: Material(
-        color: Colors.transparent,
-        shape: const CircleBorder(),
-        child: InkWell(
-          customBorder: const CircleBorder(),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.all(7),
-            child: Icon(icon, size: 16, color: color),
+      message: widget.tooltip,
+      child: GestureDetector(
+        onTapDown: (_) => _setPressed(true),
+        onTapCancel: () => _setPressed(false),
+        onTapUp: (_) => _setPressed(false),
+        child: AnimatedScale(
+          scale: _pressed ? 0.82 : 1.0,
+          duration: const Duration(milliseconds: 110),
+          curve: Curves.easeOut,
+          child: Material(
+            color: Colors.transparent,
+            shape: const CircleBorder(),
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: onTap == null
+                  ? null
+                  : () {
+                      HapticFeedback.selectionClick();
+                      onTap();
+                    },
+              child: Padding(
+                padding: const EdgeInsets.all(7),
+                child: Icon(widget.icon, size: 16, color: color),
+              ),
+            ),
           ),
         ),
       ),

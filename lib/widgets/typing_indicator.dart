@@ -30,6 +30,7 @@ class _TypingIndicatorState extends State<TypingIndicator>
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -44,13 +45,15 @@ class _TypingIndicatorState extends State<TypingIndicator>
             bottomRight: Radius.circular(18),
             bottomLeft: Radius.circular(4),
           ),
-          boxShadow: [
-            BoxShadow(
-              color: theme.colorScheme.shadow.withOpacity(0.05),
-              blurRadius: 10,
-              offset: const Offset(0, 3),
-            ),
-          ],
+          boxShadow: isDark
+              ? null
+              : [
+                  BoxShadow(
+                    color: theme.colorScheme.shadow.withOpacity(0.05),
+                    blurRadius: 10,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
         ),
         child: AnimatedBuilder(
           animation: _controller,

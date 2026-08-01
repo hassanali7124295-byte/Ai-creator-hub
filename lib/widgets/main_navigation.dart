@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../screens/home_screen.dart';
 import '../screens/chat_screen.dart';
@@ -76,10 +77,14 @@ class _MainNavigationState extends State<MainNavigation> {
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,
+        // Step 12.2: a longer, easing indicator animation reads as far
+        // more premium than the terse Material default.
+        animationDuration: const Duration(milliseconds: 420),
         // Overridden per selection so the pill indicator matches the
         // active tab's own accent instead of one fixed app-wide color.
         indicatorColor: selectedAccent.withOpacity(0.16),
         onDestinationSelected: (index) {
+          if (index != _currentIndex) HapticFeedback.selectionClick();
           setState(() => _currentIndex = index);
         },
         destinations: [
@@ -89,9 +94,17 @@ class _MainNavigationState extends State<MainNavigation> {
                 _destinations[i].icon,
                 color: theme.colorScheme.onSurfaceVariant,
               ),
-              selectedIcon: Icon(
-                _destinations[i].selectedIcon,
-                color: _destinations[i].accent,
+              selectedIcon: TweenAnimationBuilder<double>(
+                key: ValueKey('nav-selected-$i-$_currentIndex'),
+                tween: Tween(begin: 0.7, end: 1.0),
+                duration: const Duration(milliseconds: 260),
+                curve: Curves.easeOutBack,
+                builder: (context, scale, child) =>
+                    Transform.scale(scale: scale, child: child),
+                child: Icon(
+                  _destinations[i].selectedIcon,
+                  color: _destinations[i].accent,
+                ),
               ),
               label: _destinations[i].label,
             ),
