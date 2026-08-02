@@ -11,6 +11,7 @@ import '../models/image_generation_models.dart';
 import '../widgets/image_fullscreen_viewer.dart';
 import '../widgets/image_gallery_card.dart';
 import '../widgets/image_shimmer_card.dart';
+import '../widgets/image_studio_kit.dart';
 
 /// AI Image Generator screen — prompt, style/aspect-ratio/count/quality
 /// controls, a shimmering loading state, and a gallery of generated images
@@ -60,17 +61,17 @@ class _ImageScreenState extends State<ImageScreen>
   // Step 14.1: renamed/restyled as small "quick style" prompt chips per the
   // premium suggestion-row spec — same tap-to-fill behavior as Step 14's
   // suggestion chips, just a new label set + an icon per chip.
-  static const List<_SuggestionItem> _suggestions = [
-    _SuggestionItem('Realistic', Icons.camera_alt_rounded),
-    _SuggestionItem('Anime', Icons.emoji_emotions_rounded),
-    _SuggestionItem('Portrait', Icons.face_rounded),
-    _SuggestionItem('Logo', Icons.workspace_premium_rounded),
-    _SuggestionItem('Fantasy', Icons.auto_awesome_rounded),
-    _SuggestionItem('3D Render', Icons.view_in_ar_rounded),
-    _SuggestionItem('Cinematic', Icons.movie_creation_rounded),
-    _SuggestionItem('Wallpaper', Icons.wallpaper_rounded),
-    _SuggestionItem('Minimal', Icons.crop_square_rounded),
-    _SuggestionItem('Pixel Art', Icons.grid_view_rounded),
+  static const List<SuggestionItem> _suggestions = [
+    SuggestionItem('Realistic', Icons.camera_alt_rounded),
+    SuggestionItem('Anime', Icons.emoji_emotions_rounded),
+    SuggestionItem('Portrait', Icons.face_rounded),
+    SuggestionItem('Logo', Icons.workspace_premium_rounded),
+    SuggestionItem('Fantasy', Icons.auto_awesome_rounded),
+    SuggestionItem('3D Render', Icons.view_in_ar_rounded),
+    SuggestionItem('Cinematic', Icons.movie_creation_rounded),
+    SuggestionItem('Wallpaper', Icons.wallpaper_rounded),
+    SuggestionItem('Minimal', Icons.crop_square_rounded),
+    SuggestionItem('Pixel Art', Icons.grid_view_rounded),
   ];
 
   @override
@@ -499,7 +500,7 @@ class _ImageScreenState extends State<ImageScreen>
         itemBuilder: (context, i) {
           final item = _suggestions[i];
           final selected = current == item.label.toLowerCase();
-          return _SuggestionChip(
+          return SuggestionChip(
             label: item.label,
             icon: item.icon,
             selected: selected,
@@ -598,7 +599,7 @@ class _ImageScreenState extends State<ImageScreen>
               separatorBuilder: (_, __) => const SizedBox(width: 8),
               itemBuilder: (context, i) {
                 final style = ImageStyle.values[i];
-                return _StyleChip(
+                return StyleChip(
                   style: style,
                   selected: style == _style,
                   onTap: () => setState(() => _style = style),
@@ -609,7 +610,7 @@ class _ImageScreenState extends State<ImageScreen>
           const SizedBox(height: 20),
           _sectionLabel(theme, 'Aspect ratio'),
           const SizedBox(height: 10),
-          _SegmentedControl<AspectRatioOption>(
+          SegmentedControl<AspectRatioOption>(
             options: AspectRatioOption.values,
             selected: _aspectRatio,
             labelOf: (option) => option.label,
@@ -618,7 +619,7 @@ class _ImageScreenState extends State<ImageScreen>
           const SizedBox(height: 20),
           _sectionLabel(theme, 'Quality'),
           const SizedBox(height: 10),
-          _SegmentedControl<ImageQuality>(
+          SegmentedControl<ImageQuality>(
             options: ImageQuality.values,
             selected: _quality,
             labelOf: (option) => option.label,
@@ -627,7 +628,7 @@ class _ImageScreenState extends State<ImageScreen>
           const SizedBox(height: 20),
           _sectionLabel(theme, 'Number of images'),
           const SizedBox(height: 10),
-          _SegmentedControl<int>(
+          SegmentedControl<int>(
             options: const [1, 2, 3, 4],
             selected: _count,
             labelOf: (option) => '$option',
@@ -640,10 +641,10 @@ class _ImageScreenState extends State<ImageScreen>
 
   /// Generate button (requirement 5): full-width emerald gradient, a
   /// sparkles glyph that swaps for a spinner while generating, and a
-  /// gentle press-scale via [_PressableScale].
+  /// gentle press-scale via [PressableScale].
   Widget _buildGenerateButton(ThemeData theme) {
     final isDark = theme.brightness == Brightness.dark;
-    return _PressableScale(
+    return PressableScale(
       onTap: _isGenerating ? null : _generate,
       child: Container(
         width: double.infinity,
@@ -733,7 +734,7 @@ class _ImageScreenState extends State<ImageScreen>
         children: [
           Row(
             children: [
-              _PulsingIcon(color: theme.colorScheme.primary),
+              PulsingIcon(color: theme.colorScheme.primary),
               const SizedBox(width: 12),
               Expanded(
                 child: Text(
@@ -859,306 +860,3 @@ class _ImageScreenState extends State<ImageScreen>
   }
 }
 
-/// A suggestion chip's label + glyph pair.
-class _SuggestionItem {
-  final String label;
-  final IconData icon;
-  const _SuggestionItem(this.label, this.icon);
-}
-
-/// A small pill for the prompt suggestion row — filled + bordered when
-/// selected, with the glyph gently scaling in (no bounce/overshoot).
-class _SuggestionChip extends StatelessWidget {
-  final String label;
-  final IconData icon;
-  final bool selected;
-  final VoidCallback onTap;
-
-  const _SuggestionChip({
-    required this.label,
-    required this.icon,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Material(
-      color: Colors.transparent,
-      borderRadius: BorderRadius.circular(20),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(20),
-        onTap: onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOut,
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(20),
-            color: selected
-                ? theme.colorScheme.primary
-                : theme.colorScheme.surfaceContainerHighest,
-            border: Border.all(
-              color: selected
-                  ? theme.colorScheme.primary
-                  : theme.colorScheme.outlineVariant.withOpacity(0.6),
-            ),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              AnimatedScale(
-                scale: selected ? 1.15 : 1.0,
-                duration: const Duration(milliseconds: 200),
-                curve: Curves.easeOut,
-                child: Icon(
-                  icon,
-                  size: 15,
-                  color: selected ? theme.colorScheme.onPrimary : theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
-                  color: selected ? theme.colorScheme.onPrimary : theme.colorScheme.onSurface,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// A style-picker chip: a small gradient swatch (the style's own colors)
-/// plus its label, with an animated border/tint when selected.
-class _StyleChip extends StatelessWidget {
-  final ImageStyle style;
-  final bool selected;
-  final VoidCallback onTap;
-
-  const _StyleChip({
-    required this.style,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Material(
-      color: Colors.transparent,
-      borderRadius: BorderRadius.circular(16),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOut,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            color: selected
-                ? theme.colorScheme.primary.withOpacity(0.14)
-                : theme.colorScheme.surfaceContainerHighest,
-            border: Border.all(
-              color: selected ? theme.colorScheme.primary : Colors.transparent,
-              width: 1.4,
-            ),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 22,
-                height: 22,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: LinearGradient(colors: style.gradient),
-                ),
-                child: Icon(style.glyph, size: 13, color: Colors.white),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                style.label,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                  color: selected ? theme.colorScheme.primary : theme.colorScheme.onSurface,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// A reusable animated segmented control (requirement 4 + code-quality
-/// requirement 12 — this one widget replaces three separate rows of
-/// always-visible option pills for aspect ratio / quality / count with a
-/// single sliding-highlight bar).
-class _SegmentedControl<T> extends StatelessWidget {
-  final List<T> options;
-  final T selected;
-  final String Function(T option) labelOf;
-  final ValueChanged<T> onSelect;
-
-  const _SegmentedControl({
-    required this.options,
-    required this.selected,
-    required this.labelOf,
-    required this.onSelect,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final index = options.indexOf(selected).clamp(0, options.length - 1);
-
-    return Container(
-      height: 44,
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final segmentWidth = constraints.maxWidth / options.length;
-          return Stack(
-            children: [
-              AnimatedPositioned(
-                duration: const Duration(milliseconds: 200),
-                curve: Curves.easeOut,
-                left: segmentWidth * index,
-                width: segmentWidth,
-                top: 0,
-                bottom: 0,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.primary,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-              ),
-              Row(
-                children: [
-                  for (final option in options)
-                    Expanded(
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => onSelect(option),
-                        child: Center(
-                          child: Text(
-                            labelOf(option),
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              fontWeight: FontWeight.w700,
-                              color: option == selected
-                                  ? theme.colorScheme.onPrimary
-                                  : theme.colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-/// A gentle, non-bouncy press-scale wrapper (requirement 5's "smooth
-/// press animation") — extracted so the Generate button doesn't
-/// reimplement the same GestureDetector+AnimatedScale plumbing used
-/// elsewhere in the app.
-class _PressableScale extends StatefulWidget {
-  final Widget child;
-  final VoidCallback? onTap;
-
-  const _PressableScale({required this.child, required this.onTap});
-
-  @override
-  State<_PressableScale> createState() => _PressableScaleState();
-}
-
-class _PressableScaleState extends State<_PressableScale> {
-  bool _pressed = false;
-
-  void _setPressed(bool value) {
-    if (widget.onTap == null) return;
-    if (_pressed != value) setState(() => _pressed = value);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTapDown: (_) => _setPressed(true),
-      onTapCancel: () => _setPressed(false),
-      onTapUp: (_) => _setPressed(false),
-      onTap: widget.onTap,
-      child: AnimatedScale(
-        scale: _pressed ? 0.97 : 1.0,
-        duration: const Duration(milliseconds: 120),
-        curve: Curves.easeOut,
-        child: widget.child,
-      ),
-    );
-  }
-}
-
-/// A softly "breathing" AI glyph for the loading card — scale + opacity
-/// ease in and out on a slow loop. No bounce/overshoot, matching the
-/// chat screen's typing-indicator philosophy.
-class _PulsingIcon extends StatefulWidget {
-  final Color color;
-  const _PulsingIcon({required this.color});
-
-  @override
-  State<_PulsingIcon> createState() => _PulsingIconState();
-}
-
-class _PulsingIconState extends State<_PulsingIcon>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1200),
-  )..repeat(reverse: true);
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, child) {
-        final t = Curves.easeInOut.transform(_controller.value);
-        return Transform.scale(
-          scale: 0.92 + t * 0.16,
-          child: Opacity(opacity: 0.75 + t * 0.25, child: child),
-        );
-      },
-      child: Container(
-        width: 34,
-        height: 34,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: widget.color.withOpacity(0.15),
-        ),
-        child: Icon(Icons.auto_awesome_rounded, color: widget.color, size: 18),
-      ),
-    );
-  }
-}

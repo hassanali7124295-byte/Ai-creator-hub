@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../models/image_generation_models.dart';
+import 'image_studio_kit.dart';
 
 /// The Hero tag shared between a gallery card's thumbnail and the
 /// matching page in [ImageFullscreenViewer] — kept in one place so both
@@ -99,27 +100,27 @@ class _ImageGalleryCardState extends State<ImageGalleryCard> {
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                           children: [
-                            _CardIcon(
+                            GlassIconButton(
                               icon: Icons.download_rounded,
                               tooltip: 'Download',
                               onTap: widget.onDownload,
                             ),
-                            _CardIcon(
+                            GlassIconButton(
                               icon: Icons.ios_share_rounded,
                               tooltip: 'Share',
                               onTap: widget.onShare,
                             ),
-                            _CardIcon(
+                            GlassIconButton(
                               icon: Icons.refresh_rounded,
                               tooltip: 'Regenerate',
                               onTap: widget.onRegenerate,
                             ),
-                            _CardIcon(
+                            GlassIconButton(
                               icon: Icons.fullscreen_rounded,
                               tooltip: 'Fullscreen',
                               onTap: widget.onOpen,
                             ),
-                            _CardIcon(
+                            GlassIconButton(
                               icon: Icons.delete_outline_rounded,
                               tooltip: 'Delete',
                               onTap: widget.onDelete,
@@ -172,31 +173,3 @@ class _FadeInImageState extends State<_FadeInImage> {
   }
 }
 
-/// A small always-white icon button for the card's bottom action bar —
-/// 16dp, matching the icon size used for the chat screen's action row.
-class _CardIcon extends StatelessWidget {
-  final IconData icon;
-  final String tooltip;
-  final VoidCallback onTap;
-
-  const _CardIcon({
-    required this.icon,
-    required this.tooltip,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Tooltip(
-      message: tooltip,
-      child: InkResponse(
-        onTap: onTap,
-        radius: 18,
-        child: Padding(
-          padding: const EdgeInsets.all(6),
-          child: Icon(icon, size: 16, color: Colors.white),
-        ),
-      ),
-    );
-  }
-}
