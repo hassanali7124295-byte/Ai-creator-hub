@@ -81,13 +81,17 @@ class AttachmentPreview extends StatelessWidget {
           ),
           if (onRemove != null) ...[
             const SizedBox(width: 4),
-            InkWell(
-              onTap: onRemove,
-              customBorder: const CircleBorder(),
-              child: Padding(
-                padding: const EdgeInsets.all(4),
-                child: Icon(Icons.close_rounded,
-                    size: 16, color: theme.colorScheme.onSurfaceVariant),
+            Material(
+              color: Colors.transparent,
+              shape: const CircleBorder(),
+              child: InkWell(
+                onTap: onRemove,
+                customBorder: const CircleBorder(),
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Icon(Icons.close_rounded,
+                      size: 16, color: theme.colorScheme.onSurfaceVariant),
+                ),
               ),
             ),
           ],
@@ -131,17 +135,21 @@ class _ImageThumb extends StatelessWidget {
           Positioned(
             top: 4,
             right: 4,
-            child: InkWell(
-              onTap: onRemove,
-              customBorder: const CircleBorder(),
-              child: Container(
-                padding: const EdgeInsets.all(3),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.55),
-                  shape: BoxShape.circle,
+            child: Material(
+              color: Colors.transparent,
+              shape: const CircleBorder(),
+              child: InkWell(
+                onTap: onRemove,
+                customBorder: const CircleBorder(),
+                child: Container(
+                  padding: const EdgeInsets.all(3),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.55),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.close_rounded,
+                      size: 14, color: Colors.white),
                 ),
-                child: const Icon(Icons.close_rounded,
-                    size: 14, color: Colors.white),
               ),
             ),
           ),

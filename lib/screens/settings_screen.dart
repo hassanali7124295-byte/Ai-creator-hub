@@ -57,6 +57,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.dispose();
   }
 
+  static String _themeModeLabel(ThemeMode mode) {
+    switch (mode) {
+      case ThemeMode.system:
+        return 'System default';
+      case ThemeMode.light:
+        return 'Light';
+      case ThemeMode.dark:
+        return 'Dark';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -67,7 +78,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          _SectionLabel('Gemini API Key'),
+          const _SectionLabel('Gemini API Key'),
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -138,49 +149,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           const SizedBox(height: 24),
-          _SectionLabel('Appearance'),
+          const _SectionLabel('Appearance'),
           Card(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
               child: Column(
                 children: [
-                  RadioListTile<ThemeMode>(
-                    title: const Text('System default'),
-                    value: ThemeMode.system,
-                    groupValue: themeProvider.themeMode,
-                    onChanged: (mode) {
-                      if (mode != null) themeProvider.setThemeMode(mode);
-                    },
-                  ),
-                  RadioListTile<ThemeMode>(
-                    title: const Text('Light'),
-                    value: ThemeMode.light,
-                    groupValue: themeProvider.themeMode,
-                    onChanged: (mode) {
-                      if (mode != null) themeProvider.setThemeMode(mode);
-                    },
-                  ),
-                  RadioListTile<ThemeMode>(
-                    title: const Text('Dark'),
-                    value: ThemeMode.dark,
-                    groupValue: themeProvider.themeMode,
-                    onChanged: (mode) {
-                      if (mode != null) themeProvider.setThemeMode(mode);
-                    },
-                  ),
+                  for (final mode in ThemeMode.values)
+                    RadioListTile<ThemeMode>(
+                      title: Text(_themeModeLabel(mode)),
+                      value: mode,
+                      groupValue: themeProvider.themeMode,
+                      onChanged: (selected) {
+                        if (selected != null) {
+                          themeProvider.setThemeMode(selected);
+                        }
+                      },
+                    ),
                 ],
               ),
             ),
           ),
           const SizedBox(height: 24),
-          _SectionLabel('About'),
+          const _SectionLabel('About'),
           Card(
             child: Column(
               children: [
-                ListTile(
-                  leading: const Icon(Icons.info_outline_rounded),
-                  title: const Text('AI Creator Hub'),
-                  subtitle: const Text('Version 1.0.0'),
+                const ListTile(
+                  leading: Icon(Icons.info_outline_rounded),
+                  title: Text('AI Creator Hub'),
+                  subtitle: Text('Version 1.0.0'),
                 ),
                 const Divider(height: 1, indent: 16, endIndent: 16),
                 ListTile(
@@ -205,14 +203,15 @@ class _SectionLabel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.only(left: 4, bottom: 8),
       child: Text(
         label,
-        style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: Theme.of(context).colorScheme.primary,
-              fontWeight: FontWeight.w600,
-            ),
+        style: theme.textTheme.labelLarge?.copyWith(
+          color: theme.colorScheme.primary,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }

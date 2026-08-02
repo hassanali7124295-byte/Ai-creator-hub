@@ -41,6 +41,29 @@ class _ConversationDrawerState extends State<ConversationDrawer> {
     return all.where((c) => c.title.toLowerCase().contains(q)).toList();
   }
 
+  /// Builds one [_ConversationTile] per conversation in [list] — shared by
+  /// both the "Pinned" and "Recent" sections so the tile-wiring (tap,
+  /// rename, delete, pin toggle) only lives in one place.
+  List<Widget> _buildTiles(BuildContext context, List<Conversation> list) {
+    return [
+      for (int i = 0; i < list.length; i++)
+        _ConversationTile(
+          key: ValueKey(list[i].id),
+          conversation: list[i],
+          index: i,
+          isSelected: list[i].id == widget.currentId,
+          onTap: () {
+            widget.onSelect(list[i].id);
+            Navigator.of(context).pop();
+          },
+          onRename: () => _rename(context, list[i]),
+          onDelete: () => _confirmDelete(context, list[i]),
+          onTogglePin: () =>
+              context.read<ConversationProvider>().togglePin(list[i].id),
+        ),
+    ];
+  }
+
   Future<void> _confirmDelete(BuildContext context, Conversation c) async {
     final provider = context.read<ConversationProvider>();
     final confirmed = await showDialog<bool>(
@@ -188,43 +211,11 @@ class _ConversationDrawerState extends State<ConversationDrawer> {
                           children: [
                             if (pinned.isNotEmpty) ...[
                               _SectionLabel(label: 'Pinned', theme: theme),
-                              for (int i = 0; i < pinned.length; i++)
-                                _ConversationTile(
-                                  key: ValueKey(pinned[i].id),
-                                  conversation: pinned[i],
-                                  index: i,
-                                  isSelected: pinned[i].id == widget.currentId,
-                                  onTap: () {
-                                    widget.onSelect(pinned[i].id);
-                                    Navigator.of(context).pop();
-                                  },
-                                  onRename: () => _rename(context, pinned[i]),
-                                  onDelete: () =>
-                                      _confirmDelete(context, pinned[i]),
-                                  onTogglePin: () => context
-                                      .read<ConversationProvider>()
-                                      .togglePin(pinned[i].id),
-                                ),
+                              ..._buildTiles(context, pinned),
                             ],
                             if (recents.isNotEmpty) ...[
                               _SectionLabel(label: 'Recent', theme: theme),
-                              for (int i = 0; i < recents.length; i++)
-                                _ConversationTile(
-                                  key: ValueKey(recents[i].id),
-                                  conversation: recents[i],
-                                  index: i,
-                                  isSelected: recents[i].id == widget.currentId,
-                                  onTap: () {
-                                    widget.onSelect(recents[i].id);
-                                    Navigator.of(context).pop();
-                                  },
-                                  onRename: () => _rename(context, recents[i]),
-                                  onDelete: () =>
-                                      _confirmDelete(context, recents[i]),
-                                  onTogglePin: () => context
-                                      .read<ConversationProvider>()
-                                      .togglePin(recents[i].id),
-                                ),
+                              ..._buildTiles(context, recents),
                             ],
                           ],
                         ),

@@ -61,7 +61,7 @@ class HomeScreen extends StatelessWidget {
           slivers: [
             SliverToBoxAdapter(
               child: FadeInDown(
-                duration: const Duration(milliseconds: 400),
+                duration: const Duration(milliseconds: 420),
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
                   child: Row(
@@ -122,7 +122,7 @@ class HomeScreen extends StatelessWidget {
                     final item = _features[index];
                     return FadeInUp(
                       delay: Duration(milliseconds: 80 * index),
-                      duration: const Duration(milliseconds: 400),
+                      duration: const Duration(milliseconds: 420),
                       child: _FeatureCard(item: item),
                     );
                   },

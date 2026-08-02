@@ -528,7 +528,7 @@ class _ChatScreenState extends State<ChatScreen> {
               child: _isLoadingHistory
                   ? const Center(child: CircularProgressIndicator())
                   : AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 220),
+                      duration: const Duration(milliseconds: 200),
                       switchInCurve: Curves.easeOut,
                       switchOutCurve: Curves.easeIn,
                       child: _messages.isEmpty
@@ -847,7 +847,7 @@ class _SuggestionChipState extends State<_SuggestionChip> {
       onTapUp: (_) => _setPressed(false),
       child: AnimatedScale(
         scale: _pressed ? 0.96 : 1.0,
-        duration: const Duration(milliseconds: 110),
+        duration: const Duration(milliseconds: 120),
         curve: Curves.easeOut,
         child: Material(
           color: Colors.transparent,

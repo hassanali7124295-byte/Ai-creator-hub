@@ -495,7 +495,7 @@ class _ActionIconState extends State<_ActionIcon> {
         onTapUp: (_) => _setPressed(false),
         child: AnimatedScale(
           scale: _pressed ? 0.82 : 1.0,
-          duration: const Duration(milliseconds: 110),
+          duration: const Duration(milliseconds: 120),
           curve: Curves.easeOut,
           child: Material(
             color: Colors.transparent,
