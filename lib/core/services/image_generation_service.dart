@@ -2,6 +2,23 @@ import 'dart:async';
 
 import '../../models/image_generation_models.dart';
 
+/// Thrown by [ImageGenerationService.generate] for any real-world
+/// failure — bad/missing API key, no internet, timeout, quota exceeded,
+/// a safety-blocked prompt, a rate limit, or an empty response. [message]
+/// is always short and friendly enough to show directly in a [SnackBar];
+/// callers never need to interpret an HTTP status code themselves.
+///
+/// Provider-agnostic on purpose (it lives here, not in any one backend's
+/// service file) so every [ImageGenerationService] implementation — and
+/// the screen that catches it — shares the exact same exception type.
+class ImageGenerationException implements Exception {
+  final String message;
+  const ImageGenerationException(this.message);
+
+  @override
+  String toString() => message;
+}
+
 /// Thrown by [ImageGenerationService.generate] when a request is stopped
 /// early via [CancellationToken.cancel] (the gallery's "Cancel" button).
 class ImageGenerationCancelledException implements Exception {

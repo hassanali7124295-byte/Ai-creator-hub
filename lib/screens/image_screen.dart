@@ -4,8 +4,8 @@ import 'package:animate_do/animate_do.dart';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
-import '../core/services/gemini_image_generation_service.dart';
 import '../core/services/image_generation_service.dart';
+import '../core/services/pollinations_image_generation_service.dart';
 import '../core/theme/chat_palette.dart';
 import '../models/image_generation_models.dart';
 import '../widgets/image_fullscreen_viewer.dart';
@@ -35,9 +35,12 @@ class ImageScreen extends StatefulWidget {
 
 class _ImageScreenState extends State<ImageScreen>
     with SingleTickerProviderStateMixin {
-  // Step 14.3: real Gemini image generation. Still the one line to change
-  // if a different provider is ever plugged in.
-  final ImageGenerationService _service = const GeminiImageGenerationService();
+  // Step 15: real Pollinations AI image generation (key-less `flux`
+  // model) — replaces Gemini Image, which needs billing/quota this
+  // project doesn't have. Still the one line to change if a different
+  // provider is ever plugged in.
+  final ImageGenerationService _service =
+      const PollinationsImageGenerationService();
 
   final TextEditingController _promptController = TextEditingController();
   final TextEditingController _negativeController = TextEditingController();
