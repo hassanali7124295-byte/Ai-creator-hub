@@ -128,11 +128,9 @@ class GeminiImageGenerationService implements ImageGenerationService {
       ],
       'generationConfig': {
         'responseModalities': ['TEXT', 'IMAGE'],
-        'responseFormat': {
-          'image': {
-            'aspectRatio': request.aspectRatio.label,
-            'imageSize': _imageSizeFor(request.quality),
-          },
+        'imageConfig': {
+          'aspectRatio': request.aspectRatio.label,
+          'imageSize': _imageSizeFor(request.quality),
         },
       },
     });
@@ -216,6 +214,30 @@ class GeminiImageGenerationService implements ImageGenerationService {
         ImageQuality.ultra => '4K',
       };
 
+  /// Pulls the original `error.message` out of Gemini's JSON error body
+  /// (the standard Google API error shape is `{"error": {"message": ...,
+  /// "status": ...}}`) so a 400 shows the real, specific reason instead of
+  /// a made-up generic string. Falls back to the raw response body if the
+  /// JSON doesn't have the expected shape.
+  String _extractApiErrorMessage(String body) {
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) {
+        final error = decoded['error'];
+        if (error is Map<String, dynamic>) {
+          final message = error['message'];
+          final status = error['status'];
+          if (message is String && message.isNotEmpty) {
+            return status is String ? '$message ($status)' : message;
+          }
+        }
+      }
+    } catch (_) {
+      // Not JSON, or not the expected shape — fall through to raw body.
+    }
+    return body.isNotEmpty ? body : 'No error details were returned.';
+  }
+
   /// Walks the response for the friendly-error cases (bad key, quota,
   /// safety block, empty result) before falling back to decoding the
   /// first inline image part.
@@ -231,8 +253,8 @@ class GeminiImageGenerationService implements ImageGenerationService {
       );
     }
     if (response.statusCode == 400) {
-      throw const ImageGenerationException(
-        'Gemini rejected this request. Try adjusting your prompt or settings.',
+      throw ImageGenerationException(
+        'Gemini rejected this request (400): ${_extractApiErrorMessage(response.body)}',
       );
     }
     if (response.statusCode != 200) {
