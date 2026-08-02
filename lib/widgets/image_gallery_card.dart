@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 
 import '../models/image_generation_models.dart';
@@ -7,11 +9,12 @@ import '../models/image_generation_models.dart';
 /// sides always agree on it.
 String imageHeroTag(String imageId) => 'generated-image-$imageId';
 
-/// One card in the generated-images gallery: the image itself (tappable
-/// to open fullscreen) with a translucent bottom bar exposing all five
-/// required actions — Download, Share, Regenerate, Delete, Fullscreen.
-/// Fills whatever box its parent (a grid cell) gives it.
-class ImageGalleryCard extends StatelessWidget {
+/// One card in the generated-images gallery (Step 14.1 restyle): large
+/// rounded corners, a premium drop shadow, a Hero-animated + fade-in
+/// image, and an action bar that stays hidden until the card itself is
+/// tapped — matching the chat screen's "tap the AI reply to reveal its
+/// actions" pattern instead of showing five icons at all times.
+class ImageGalleryCard extends StatefulWidget {
   final GeneratedImage image;
   final VoidCallback onOpen;
   final VoidCallback onDownload;
@@ -30,74 +33,141 @@ class ImageGalleryCard extends StatelessWidget {
   });
 
   @override
+  State<ImageGalleryCard> createState() => _ImageGalleryCardState();
+}
+
+class _ImageGalleryCardState extends State<ImageGalleryCard> {
+  bool _actionsVisible = false;
+
+  void _toggleActions() => setState(() => _actionsVisible = !_actionsVisible);
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
 
-    return Material(
-      color: theme.colorScheme.surfaceContainerHigh,
-      borderRadius: BorderRadius.circular(20),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onOpen,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            Hero(
-              tag: imageHeroTag(image.id),
-              child: Image.memory(image.bytes, fit: BoxFit.cover),
-            ),
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 2, vertical: 4),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [
-                      Colors.transparent,
-                      Colors.black.withOpacity(0.55),
-                    ],
+    // Shadow lives on this outer, unclipped Container; the inner
+    // ClipRRect only clips the image/ripple content — putting the shadow
+    // on a clipped widget would silently cut it off.
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: isDark
+            ? null
+            : [
+                BoxShadow(
+                  color: theme.colorScheme.shadow.withOpacity(0.12),
+                  blurRadius: 20,
+                  offset: const Offset(0, 8),
+                ),
+              ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(24),
+        child: Material(
+          color: theme.colorScheme.surfaceContainerHigh,
+          child: InkWell(
+            onTap: _toggleActions,
+            onLongPress: _toggleActions,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Hero(
+                  tag: imageHeroTag(widget.image.id),
+                  child: _FadeInImage(bytes: widget.image.bytes),
+                ),
+                AnimatedOpacity(
+                  duration: const Duration(milliseconds: 220),
+                  opacity: _actionsVisible ? 1 : 0,
+                  child: IgnorePointer(
+                    ignoring: !_actionsVisible,
+                    child: Container(
+                      alignment: Alignment.bottomCenter,
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Colors.transparent,
+                            Colors.black.withOpacity(0.60),
+                          ],
+                          stops: const [0.5, 1],
+                        ),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            _CardIcon(
+                              icon: Icons.download_rounded,
+                              tooltip: 'Download',
+                              onTap: widget.onDownload,
+                            ),
+                            _CardIcon(
+                              icon: Icons.ios_share_rounded,
+                              tooltip: 'Share',
+                              onTap: widget.onShare,
+                            ),
+                            _CardIcon(
+                              icon: Icons.refresh_rounded,
+                              tooltip: 'Regenerate',
+                              onTap: widget.onRegenerate,
+                            ),
+                            _CardIcon(
+                              icon: Icons.fullscreen_rounded,
+                              tooltip: 'Fullscreen',
+                              onTap: widget.onOpen,
+                            ),
+                            _CardIcon(
+                              icon: Icons.delete_outline_rounded,
+                              tooltip: 'Delete',
+                              onTap: widget.onDelete,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
                 ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    _CardIcon(
-                      icon: Icons.download_rounded,
-                      tooltip: 'Download',
-                      onTap: onDownload,
-                    ),
-                    _CardIcon(
-                      icon: Icons.ios_share_rounded,
-                      tooltip: 'Share',
-                      onTap: onShare,
-                    ),
-                    _CardIcon(
-                      icon: Icons.refresh_rounded,
-                      tooltip: 'Regenerate',
-                      onTap: onRegenerate,
-                    ),
-                    _CardIcon(
-                      icon: Icons.fullscreen_rounded,
-                      tooltip: 'Fullscreen',
-                      onTap: onOpen,
-                    ),
-                    _CardIcon(
-                      icon: Icons.delete_outline_rounded,
-                      tooltip: 'Delete',
-                      onTap: onDelete,
-                    ),
-                  ],
-                ),
-              ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
+    );
+  }
+}
+
+/// Fades a decoded [Image.memory] in on its first frame instead of
+/// popping in instantly — a small touch that matches the "image fade-in"
+/// requirement without needing a network image / placeholder loader.
+class _FadeInImage extends StatefulWidget {
+  final Uint8List bytes;
+  const _FadeInImage({required this.bytes});
+
+  @override
+  State<_FadeInImage> createState() => _FadeInImageState();
+}
+
+class _FadeInImageState extends State<_FadeInImage> {
+  double _opacity = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() => _opacity = 1);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedOpacity(
+      opacity: _opacity,
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeOut,
+      child: Image.memory(widget.bytes, fit: BoxFit.cover),
     );
   }
 }

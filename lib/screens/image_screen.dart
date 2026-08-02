@@ -12,15 +12,19 @@ import '../widgets/image_fullscreen_viewer.dart';
 import '../widgets/image_gallery_card.dart';
 import '../widgets/image_shimmer_card.dart';
 
-/// AI Image Generator screen (Step 14) — prompt, style/aspect-ratio/
-/// count/quality controls, a shimmering loading state, and a gallery of
-/// generated images with a fullscreen pinch-zoom viewer.
+/// AI Image Generator screen — prompt, style/aspect-ratio/count/quality
+/// controls, a shimmering loading state, and a gallery of generated images
+/// with a fullscreen pinch-zoom viewer.
 ///
-/// Talks only to [ImageGenerationService] — see `_service` below. Swapping
-/// in a real provider later (Gemini Image, OpenAI Images, Stability AI,
-/// Fal AI, ...) means writing one new class that implements that
-/// interface and changing the single line that instantiates `_service`;
-/// nothing else on this screen needs to change.
+/// Step 14.1 is a UI-only pass: the hero header, prompt box, chips,
+/// settings card, generate button, loading state, and empty state were all
+/// restyled to match the chat screen's premium "Emerald + Graphite"
+/// language. Every generation/cancel/download/share/delete method below is
+/// unchanged from Step 14 — this screen still talks only to
+/// [ImageGenerationService] (see `_service`), so swapping in a real
+/// provider later (Gemini Image, OpenAI Images, Stability AI, Fal AI, ...)
+/// still means writing one new class and changing the single line that
+/// instantiates `_service`; nothing else needs to change.
 class ImageScreen extends StatefulWidget {
   const ImageScreen({super.key});
 
@@ -35,7 +39,9 @@ class _ImageScreenState extends State<ImageScreen>
 
   final TextEditingController _promptController = TextEditingController();
   final TextEditingController _negativeController = TextEditingController();
+  final FocusNode _promptFocusNode = FocusNode();
   bool _negativeExpanded = false;
+  bool _promptFocused = false;
 
   ImageStyle _style = ImageStyle.realistic;
   AspectRatioOption _aspectRatio = AspectRatioOption.square;
@@ -51,23 +57,44 @@ class _ImageScreenState extends State<ImageScreen>
     duration: const Duration(milliseconds: 2400),
   );
 
-  static const List<String> _suggestions = [
-    'Portrait',
-    'Nature',
-    'Futuristic City',
-    'Robot',
-    'Food',
-    'Architecture',
-    'Space',
-    'Fantasy Castle',
-    'Cute Animal',
-    'Sports Car',
+  // Step 14.1: renamed/restyled as small "quick style" prompt chips per the
+  // premium suggestion-row spec — same tap-to-fill behavior as Step 14's
+  // suggestion chips, just a new label set + an icon per chip.
+  static const List<_SuggestionItem> _suggestions = [
+    _SuggestionItem('Realistic', Icons.camera_alt_rounded),
+    _SuggestionItem('Anime', Icons.emoji_emotions_rounded),
+    _SuggestionItem('Portrait', Icons.face_rounded),
+    _SuggestionItem('Logo', Icons.workspace_premium_rounded),
+    _SuggestionItem('Fantasy', Icons.auto_awesome_rounded),
+    _SuggestionItem('3D Render', Icons.view_in_ar_rounded),
+    _SuggestionItem('Cinematic', Icons.movie_creation_rounded),
+    _SuggestionItem('Wallpaper', Icons.wallpaper_rounded),
+    _SuggestionItem('Minimal', Icons.crop_square_rounded),
+    _SuggestionItem('Pixel Art', Icons.grid_view_rounded),
   ];
 
   @override
+  void initState() {
+    super.initState();
+    _promptFocusNode.addListener(_onFocusChanged);
+    // Only drives the suggestion row's "selected" highlight (Step 14.1) —
+    // purely cosmetic, no business state depends on this.
+    _promptController.addListener(_onPromptChanged);
+  }
+
+  void _onFocusChanged() {
+    setState(() => _promptFocused = _promptFocusNode.hasFocus);
+  }
+
+  void _onPromptChanged() => setState(() {});
+
+  @override
   void dispose() {
+    _promptFocusNode.removeListener(_onFocusChanged);
+    _promptController.removeListener(_onPromptChanged);
     _promptController.dispose();
     _negativeController.dispose();
+    _promptFocusNode.dispose();
     _progressController.dispose();
     super.dispose();
   }
@@ -158,9 +185,9 @@ class _ImageScreenState extends State<ImageScreen>
 
   /// Writes the image to a temp file and hands it to the OS share sheet.
   /// Used for both Share and Download — without a gallery-write plugin
-  /// (deliberately not added; Step 14 doesn't allow new pubspec
-  /// dependencies), routing "Download" through the same native share
-  /// sheet lets the person pick "Save Image"/"Save to Files" themselves.
+  /// (deliberately not added; new pubspec dependencies aren't allowed),
+  /// routing "Download" through the same native share sheet lets the
+  /// person pick "Save Image"/"Save to Files" themselves.
   Future<void> _shareImage(GeneratedImage image, {required String shareText}) async {
     try {
       final file = File('${Directory.systemTemp.path}/ai_creator_hub_${image.id}.png');
@@ -208,18 +235,31 @@ class _ImageScreenState extends State<ImageScreen>
   @override
   Widget build(BuildContext context) {
     // Same "Emerald + Graphite" palette as the chat screen, scoped to
-    // this screen's subtree only (Step 14 requirement 10).
+    // this screen's subtree only (visual-consistency requirement).
     final theme = ChatPalette.themeFor(context);
 
     return Theme(
       data: theme,
       child: Scaffold(
-        appBar: AppBar(title: const Text('AI Image Generator')),
+        // Step 14.1: the large "AI Image Generator" title now lives in the
+        // hero header below, so the app bar itself stays quiet — just a
+        // transparent back-navigation surface, matching the chat screen's
+        // `scrolledUnderElevation: 0` treatment.
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          scrolledUnderElevation: 0,
+        ),
         body: SafeArea(
+          top: false,
           child: CustomScrollView(
             slivers: [
               SliverPadding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                sliver: SliverToBoxAdapter(child: _buildHeroHeader(theme)),
+              ),
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
                 sliver: SliverToBoxAdapter(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -233,18 +273,28 @@ class _ImageScreenState extends State<ImageScreen>
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               _buildPromptCard(theme),
-                              const SizedBox(height: 14),
+                              const SizedBox(height: 16),
                               _buildOptionsCard(theme),
                             ],
                           ),
                         ),
                       ),
-                      const SizedBox(height: 14),
+                      const SizedBox(height: 16),
                       _buildGenerateButton(theme),
-                      if (_isGenerating) ...[
-                        const SizedBox(height: 14),
-                        _buildLoadingState(theme),
-                      ],
+                      AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 220),
+                        transitionBuilder: (child, animation) => FadeTransition(
+                          opacity: animation,
+                          child: child,
+                        ),
+                        child: _isGenerating
+                            ? Padding(
+                                key: const ValueKey('loading'),
+                                padding: const EdgeInsets.only(top: 16),
+                                child: _buildLoadingState(theme),
+                              )
+                            : const SizedBox.shrink(key: ValueKey('idle')),
+                      ),
                     ],
                   ),
                 ),
@@ -256,7 +306,7 @@ class _ImageScreenState extends State<ImageScreen>
                 )
               else
                 SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
                   sliver: SliverGrid(
                     gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                       crossAxisCount: 2,
@@ -268,7 +318,7 @@ class _ImageScreenState extends State<ImageScreen>
                       (context, index) {
                         final image = _gallery[index];
                         return FadeIn(
-                          duration: const Duration(milliseconds: 260),
+                          duration: const Duration(milliseconds: 280),
                           child: ImageGalleryCard(
                             image: image,
                             onOpen: () => _openFullscreen(index),
@@ -290,47 +340,172 @@ class _ImageScreenState extends State<ImageScreen>
     );
   }
 
+  /// Hero header (requirement 1): a large title, a short subtitle, and a
+  /// soft emerald gradient glyph — the screen's visual anchor, replacing
+  /// the old plain app-bar title.
+  Widget _buildHeroHeader(ThemeData theme) {
+    return FadeInDown(
+      duration: const Duration(milliseconds: 420),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Container(
+            width: 56,
+            height: 56,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  theme.colorScheme.primary,
+                  theme.colorScheme.primary.withOpacity(0.65),
+                ],
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: theme.colorScheme.primary.withOpacity(0.28),
+                  blurRadius: 20,
+                  offset: const Offset(0, 8),
+                ),
+              ],
+            ),
+            child: const Icon(
+              Icons.auto_awesome_rounded,
+              color: Colors.white,
+              size: 26,
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'AI Image Generator',
+                  style: theme.textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -0.4,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Turn your imagination into stunning AI artwork',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// The prompt box (requirement 2): one rounded container with a magic-
+  /// wand glyph, a borderless multiline field, and an animated emerald
+  /// glow/border/shadow that eases in on focus.
   Widget _buildPromptCard(ThemeData theme) {
-    return Container(
-      padding: const EdgeInsets.all(16),
+    final isDark = theme.brightness == Brightness.dark;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOut,
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHigh,
         borderRadius: BorderRadius.circular(24),
+        border: Border.all(
+          color: _promptFocused
+              ? theme.colorScheme.primary.withOpacity(0.55)
+              : theme.colorScheme.outlineVariant.withOpacity(0.0),
+          width: 1.4,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: (_promptFocused
+                    ? theme.colorScheme.primary
+                    : theme.colorScheme.shadow)
+                .withOpacity(isDark ? 0.05 : (_promptFocused ? 0.16 : 0.06)),
+            blurRadius: _promptFocused ? 24 : 14,
+            offset: const Offset(0, 6),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _sectionLabel(theme, 'Describe your image'),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _promptController,
-            minLines: 2,
-            maxLines: 4,
-            decoration: InputDecoration(
-              hintText: 'A cozy cabin in a snowy forest at sunset...',
-              filled: true,
-              fillColor: theme.colorScheme.surfaceContainerHighest,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(16),
-                borderSide: BorderSide.none,
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
+          Row(
             children: [
-              for (final suggestion in _suggestions)
-                _SuggestionChip(
-                  label: suggestion,
-                  onTap: () => setState(() => _promptController.text = suggestion),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.primary.withOpacity(0.12),
+                  shape: BoxShape.circle,
                 ),
+                child: Icon(
+                  Icons.auto_fix_high_rounded,
+                  size: 18,
+                  color: theme.colorScheme.primary,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                'Describe your image',
+                style: theme.textTheme.labelLarge?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
             ],
           ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _promptController,
+            focusNode: _promptFocusNode,
+            minLines: 3,
+            maxLines: 6,
+            style: theme.textTheme.bodyLarge,
+            decoration: InputDecoration(
+              hintText: 'Describe the image you want to create...',
+              hintStyle: TextStyle(
+                color: theme.colorScheme.onSurfaceVariant.withOpacity(0.7),
+              ),
+              border: InputBorder.none,
+              isCollapsed: true,
+            ),
+          ),
+          const SizedBox(height: 16),
+          _buildSuggestionRow(theme),
           const SizedBox(height: 4),
           _buildNegativePrompt(theme),
         ],
+      ),
+    );
+  }
+
+  /// Suggestion chip row (requirement 3): horizontally scrollable, each
+  /// chip carrying its own glyph, with a smooth (no-bounce) selected
+  /// animation driven by whether the prompt field currently matches it.
+  Widget _buildSuggestionRow(ThemeData theme) {
+    final current = _promptController.text.trim().toLowerCase();
+    return SizedBox(
+      height: 44,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        physics: const BouncingScrollPhysics(),
+        itemCount: _suggestions.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, i) {
+          final item = _suggestions[i];
+          final selected = current == item.label.toLowerCase();
+          return _SuggestionChip(
+            label: item.label,
+            icon: item.icon,
+            selected: selected,
+            onTap: () => _promptController.text = item.label,
+          );
+        },
       ),
     );
   }
@@ -340,7 +515,7 @@ class _ImageScreenState extends State<ImageScreen>
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         InkWell(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(14),
           onTap: () => setState(() => _negativeExpanded = !_negativeExpanded),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
@@ -386,7 +561,7 @@ class _ImageScreenState extends State<ImageScreen>
                       filled: true,
                       fillColor: theme.colorScheme.surfaceContainerHighest,
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(14),
+                        borderRadius: BorderRadius.circular(16),
                         borderSide: BorderSide.none,
                       ),
                     ),
@@ -397,6 +572,11 @@ class _ImageScreenState extends State<ImageScreen>
     );
   }
 
+  /// AI Settings card (requirement 4): the 14-way style choice stays a
+  /// scrollable chip row (a segmented control doesn't read well past a
+  /// handful of options), while aspect ratio / quality / count — all
+  /// small, fixed option sets — become animated segmented controls with a
+  /// sliding highlight.
   Widget _buildOptionsCard(ThemeData theme) {
     return Container(
       padding: const EdgeInsets.all(16),
@@ -409,126 +589,155 @@ class _ImageScreenState extends State<ImageScreen>
         children: [
           _sectionLabel(theme, 'Style'),
           const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final style in ImageStyle.values)
-                _StyleChip(
+          SizedBox(
+            height: 40,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              physics: const BouncingScrollPhysics(),
+              itemCount: ImageStyle.values.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              itemBuilder: (context, i) {
+                final style = ImageStyle.values[i];
+                return _StyleChip(
                   style: style,
                   selected: style == _style,
                   onTap: () => setState(() => _style = style),
-                ),
-            ],
+                );
+              },
+            ),
           ),
           const SizedBox(height: 20),
           _sectionLabel(theme, 'Aspect ratio'),
           const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final ratio in AspectRatioOption.values)
-                _OptionPill(
-                  label: ratio.label,
-                  selected: ratio == _aspectRatio,
-                  onTap: () => setState(() => _aspectRatio = ratio),
-                ),
-            ],
-          ),
-          const SizedBox(height: 20),
-          _sectionLabel(theme, 'Number of images'),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final n in const [1, 2, 3, 4])
-                _OptionPill(
-                  label: '$n',
-                  selected: n == _count,
-                  onTap: () => setState(() => _count = n),
-                ),
-            ],
+          _SegmentedControl<AspectRatioOption>(
+            options: AspectRatioOption.values,
+            selected: _aspectRatio,
+            labelOf: (option) => option.label,
+            onSelect: (option) => setState(() => _aspectRatio = option),
           ),
           const SizedBox(height: 20),
           _sectionLabel(theme, 'Quality'),
           const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final quality in ImageQuality.values)
-                _OptionPill(
-                  label: quality.label,
-                  selected: quality == _quality,
-                  onTap: () => setState(() => _quality = quality),
-                ),
-            ],
+          _SegmentedControl<ImageQuality>(
+            options: ImageQuality.values,
+            selected: _quality,
+            labelOf: (option) => option.label,
+            onSelect: (option) => setState(() => _quality = option),
+          ),
+          const SizedBox(height: 20),
+          _sectionLabel(theme, 'Number of images'),
+          const SizedBox(height: 10),
+          _SegmentedControl<int>(
+            options: const [1, 2, 3, 4],
+            selected: _count,
+            labelOf: (option) => '$option',
+            onSelect: (option) => setState(() => _count = option),
           ),
         ],
       ),
     );
   }
 
+  /// Generate button (requirement 5): full-width emerald gradient, a
+  /// sparkles glyph that swaps for a spinner while generating, and a
+  /// gentle press-scale via [_PressableScale].
   Widget _buildGenerateButton(ThemeData theme) {
-    return SizedBox(
-      width: double.infinity,
-      height: 52,
-      child: ElevatedButton(
-        onPressed: _isGenerating ? null : _generate,
-        style: ElevatedButton.styleFrom(
-          backgroundColor: theme.colorScheme.primary,
-          foregroundColor: theme.colorScheme.onPrimary,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
+    final isDark = theme.brightness == Brightness.dark;
+    return _PressableScale(
+      onTap: _isGenerating ? null : _generate,
+      child: Container(
+        width: double.infinity,
+        height: 56,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              theme.colorScheme.primary,
+              Color.lerp(theme.colorScheme.primary, Colors.black, isDark ? 0.0 : 0.16)!,
+            ],
           ),
+          boxShadow: [
+            BoxShadow(
+              color: theme.colorScheme.primary.withOpacity(isDark ? 0.20 : 0.32),
+              blurRadius: 22,
+              offset: const Offset(0, 10),
+            ),
+          ],
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             AnimatedSwitcher(
               duration: const Duration(milliseconds: 180),
-              transitionBuilder: (child, animation) =>
-                  ScaleTransition(scale: animation, child: child),
+              transitionBuilder: (child, animation) => ScaleTransition(
+                scale: animation,
+                child: FadeTransition(opacity: animation, child: child),
+              ),
               child: _isGenerating
                   ? const SizedBox(
                       key: ValueKey('spinner'),
-                      width: 18,
-                      height: 18,
+                      width: 20,
+                      height: 20,
                       child: CircularProgressIndicator(
-                        strokeWidth: 2,
+                        strokeWidth: 2.4,
                         color: Colors.white,
                       ),
                     )
                   : const Icon(
                       Icons.auto_awesome_rounded,
                       key: ValueKey('icon'),
+                      color: Colors.white,
+                      size: 22,
                     ),
             ),
-            const SizedBox(width: 10),
-            Text(_isGenerating ? 'Generating…' : 'Generate'),
+            const SizedBox(width: 12),
+            Text(
+              _isGenerating ? 'Generating…' : 'Generate',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w800,
+                color: Colors.white,
+                letterSpacing: 0.2,
+              ),
+            ),
           ],
         ),
       ),
     );
   }
 
+  /// Loading experience (requirement 6): a gently pulsing AI glyph (no
+  /// bounce), "Creating your masterpiece…", the real progress bar, a
+  /// Cancel button, and the shimmer grid — all inside one fade-only card.
   Widget _buildLoadingState(ThemeData theme) {
+    final isDark = theme.brightness == Brightness.dark;
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHigh,
         borderRadius: BorderRadius.circular(24),
+        boxShadow: isDark
+            ? null
+            : [
+                BoxShadow(
+                  color: theme.colorScheme.shadow.withOpacity(0.05),
+                  blurRadius: 16,
+                  offset: const Offset(0, 4),
+                ),
+              ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
+              _PulsingIcon(color: theme.colorScheme.primary),
+              const SizedBox(width: 12),
               Expanded(
                 child: Text(
-                  _count > 1 ? 'Creating your images…' : 'Creating your image…',
+                  'Creating your masterpiece…',
                   style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
                 ),
               ),
@@ -539,7 +748,7 @@ class _ImageScreenState extends State<ImageScreen>
               ),
             ],
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 12),
           AnimatedBuilder(
             animation: _progressController,
             builder: (context, _) => ClipRRect(
@@ -570,6 +779,8 @@ class _ImageScreenState extends State<ImageScreen>
     );
   }
 
+  /// Empty state (requirement 8): large illustration, the required
+  /// headline/subtitle copy, and generous premium spacing.
   Widget _buildEmptyState(ThemeData theme) {
     return Center(
       child: Padding(
@@ -578,28 +789,37 @@ class _ImageScreenState extends State<ImageScreen>
           mainAxisSize: MainAxisSize.min,
           children: [
             FadeIn(
-              duration: const Duration(milliseconds: 400),
+              duration: const Duration(milliseconds: 420),
               child: Container(
-                padding: const EdgeInsets.all(20),
+                padding: const EdgeInsets.all(26),
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
                     colors: [
                       theme.colorScheme.primary,
                       theme.colorScheme.primary.withOpacity(0.65),
                     ],
                   ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: theme.colorScheme.primary.withOpacity(0.24),
+                      blurRadius: 28,
+                      offset: const Offset(0, 10),
+                    ),
+                  ],
                 ),
                 child: const Icon(
                   Icons.auto_awesome_rounded,
-                  size: 36,
+                  size: 44,
                   color: Colors.white,
                 ),
               ),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 28),
             FadeInUp(
-              duration: const Duration(milliseconds: 400),
+              duration: const Duration(milliseconds: 420),
               delay: const Duration(milliseconds: 80),
               child: Text(
                 'What would you like to create?',
@@ -610,12 +830,12 @@ class _ImageScreenState extends State<ImageScreen>
                 ),
               ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
             FadeInUp(
-              duration: const Duration(milliseconds: 400),
+              duration: const Duration(milliseconds: 420),
               delay: const Duration(milliseconds: 130),
               child: Text(
-                'Describe your imagination and let AI bring it to life.',
+                'Describe anything and let AI transform your imagination into beautiful artwork.',
                 textAlign: TextAlign.center,
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
@@ -639,12 +859,27 @@ class _ImageScreenState extends State<ImageScreen>
   }
 }
 
-/// A small outlined pill used for the suggestion-prompt row — same
-/// rounded-outline style as the chat screen's suggestion chips.
+/// A suggestion chip's label + glyph pair.
+class _SuggestionItem {
+  final String label;
+  final IconData icon;
+  const _SuggestionItem(this.label, this.icon);
+}
+
+/// A small pill for the prompt suggestion row — filled + bordered when
+/// selected, with the glyph gently scaling in (no bounce/overshoot).
 class _SuggestionChip extends StatelessWidget {
   final String label;
+  final IconData icon;
+  final bool selected;
   final VoidCallback onTap;
-  const _SuggestionChip({required this.label, required this.onTap});
+
+  const _SuggestionChip({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -655,17 +890,43 @@ class _SuggestionChip extends StatelessWidget {
       child: InkWell(
         borderRadius: BorderRadius.circular(20),
         onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(20),
+            color: selected
+                ? theme.colorScheme.primary
+                : theme.colorScheme.surfaceContainerHighest,
             border: Border.all(
-              color: theme.colorScheme.outlineVariant.withOpacity(0.7),
+              color: selected
+                  ? theme.colorScheme.primary
+                  : theme.colorScheme.outlineVariant.withOpacity(0.6),
             ),
           ),
-          child: Text(
-            label,
-            style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AnimatedScale(
+                scale: selected ? 1.15 : 1.0,
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeOut,
+                child: Icon(
+                  icon,
+                  size: 15,
+                  color: selected ? theme.colorScheme.onPrimary : theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+                  color: selected ? theme.colorScheme.onPrimary : theme.colorScheme.onSurface,
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -696,7 +957,7 @@ class _StyleChip extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
         onTap: onTap,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
+          duration: const Duration(milliseconds: 200),
           curve: Curves.easeOut,
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
@@ -737,44 +998,166 @@ class _StyleChip extends StatelessWidget {
   }
 }
 
-/// A generic selectable pill for aspect ratio / count / quality — plain
-/// text, animated background swap on selection.
-class _OptionPill extends StatelessWidget {
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
+/// A reusable animated segmented control (requirement 4 + code-quality
+/// requirement 12 — this one widget replaces three separate rows of
+/// always-visible option pills for aspect ratio / quality / count with a
+/// single sliding-highlight bar).
+class _SegmentedControl<T> extends StatelessWidget {
+  final List<T> options;
+  final T selected;
+  final String Function(T option) labelOf;
+  final ValueChanged<T> onSelect;
 
-  const _OptionPill({
-    required this.label,
+  const _SegmentedControl({
+    required this.options,
     required this.selected,
-    required this.onTap,
+    required this.labelOf,
+    required this.onSelect,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Material(
-      color: Colors.transparent,
-      borderRadius: BorderRadius.circular(14),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(14),
-        onTap: onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOut,
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            color: selected ? theme.colorScheme.primary : theme.colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(14),
-          ),
-          child: Text(
-            label,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-              color: selected ? theme.colorScheme.onPrimary : theme.colorScheme.onSurface,
-            ),
-          ),
+    final index = options.indexOf(selected).clamp(0, options.length - 1);
+
+    return Container(
+      height: 44,
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final segmentWidth = constraints.maxWidth / options.length;
+          return Stack(
+            children: [
+              AnimatedPositioned(
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeOut,
+                left: segmentWidth * index,
+                width: segmentWidth,
+                top: 0,
+                bottom: 0,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.primary,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+              Row(
+                children: [
+                  for (final option in options)
+                    Expanded(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => onSelect(option),
+                        child: Center(
+                          child: Text(
+                            labelOf(option),
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              color: option == selected
+                                  ? theme.colorScheme.onPrimary
+                                  : theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// A gentle, non-bouncy press-scale wrapper (requirement 5's "smooth
+/// press animation") — extracted so the Generate button doesn't
+/// reimplement the same GestureDetector+AnimatedScale plumbing used
+/// elsewhere in the app.
+class _PressableScale extends StatefulWidget {
+  final Widget child;
+  final VoidCallback? onTap;
+
+  const _PressableScale({required this.child, required this.onTap});
+
+  @override
+  State<_PressableScale> createState() => _PressableScaleState();
+}
+
+class _PressableScaleState extends State<_PressableScale> {
+  bool _pressed = false;
+
+  void _setPressed(bool value) {
+    if (widget.onTap == null) return;
+    if (_pressed != value) setState(() => _pressed = value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTapDown: (_) => _setPressed(true),
+      onTapCancel: () => _setPressed(false),
+      onTapUp: (_) => _setPressed(false),
+      onTap: widget.onTap,
+      child: AnimatedScale(
+        scale: _pressed ? 0.97 : 1.0,
+        duration: const Duration(milliseconds: 120),
+        curve: Curves.easeOut,
+        child: widget.child,
+      ),
+    );
+  }
+}
+
+/// A softly "breathing" AI glyph for the loading card — scale + opacity
+/// ease in and out on a slow loop. No bounce/overshoot, matching the
+/// chat screen's typing-indicator philosophy.
+class _PulsingIcon extends StatefulWidget {
+  final Color color;
+  const _PulsingIcon({required this.color});
+
+  @override
+  State<_PulsingIcon> createState() => _PulsingIconState();
+}
+
+class _PulsingIconState extends State<_PulsingIcon>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1200),
+  )..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        final t = Curves.easeInOut.transform(_controller.value);
+        return Transform.scale(
+          scale: 0.92 + t * 0.16,
+          child: Opacity(opacity: 0.75 + t * 0.25, child: child),
+        );
+      },
+      child: Container(
+        width: 34,
+        height: 34,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: widget.color.withOpacity(0.15),
         ),
+        child: Icon(Icons.auto_awesome_rounded, color: widget.color, size: 18),
       ),
     );
   }
