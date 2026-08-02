@@ -4,8 +4,8 @@ import 'package:animate_do/animate_do.dart';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../core/services/gemini_image_generation_service.dart';
 import '../core/services/image_generation_service.dart';
-import '../core/services/mock_image_generation_service.dart';
 import '../core/theme/chat_palette.dart';
 import '../models/image_generation_models.dart';
 import '../widgets/image_fullscreen_viewer.dart';
@@ -35,8 +35,9 @@ class ImageScreen extends StatefulWidget {
 
 class _ImageScreenState extends State<ImageScreen>
     with SingleTickerProviderStateMixin {
-  // The one line to change to plug in a real image-generation provider.
-  final ImageGenerationService _service = const MockImageGenerationService();
+  // Step 14.3: real Gemini image generation. Still the one line to change
+  // if a different provider is ever plugged in.
+  final ImageGenerationService _service = const GeminiImageGenerationService();
 
   final TextEditingController _promptController = TextEditingController();
   final TextEditingController _negativeController = TextEditingController();
@@ -166,6 +167,18 @@ class _ImageScreenState extends State<ImageScreen>
       );
       return results;
     } on ImageGenerationCancelledException {
+      return null;
+    } on ImageGenerationException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+      }
+      return null;
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Something went wrong generating your image. Please try again.')),
+        );
+      }
       return null;
     } finally {
       if (mounted) {
