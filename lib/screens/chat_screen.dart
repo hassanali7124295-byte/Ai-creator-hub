@@ -530,8 +530,6 @@ class _ChatScreenState extends State<ChatScreen> {
             overflow: TextOverflow.ellipsis,
           ),
           actions: [
-            _ModePill(mode: _mode, onTap: _pickMode),
-            const SizedBox(width: 2),
             _AppBarIconButton(
               tooltip: 'New chat',
               icon: Icons.mode_edit_outline_rounded,
@@ -665,6 +663,13 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 ),
               ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: _ModePill(mode: _mode, onTap: _pickMode),
+              ),
+            ),
             _ChatInputBar(
               controller: _inputController,
               isSending: _isSending,
@@ -679,10 +684,11 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
-/// The AI Modes entry point in the app bar: a small pill showing the
-/// active mode's emoji + label, tapped to open [showAiModeSheet]. Purely
-/// presentational — [ChatScreen._pickMode] owns the actual sheet call and
-/// state update.
+/// The AI Modes entry point, now placed above the message input bar
+/// (ChatGPT-style) instead of the app bar. Shows the active mode's emoji
+/// plus the static "Select Model" label, tapped to open [showAiModeSheet].
+/// Purely presentational — [ChatScreen._pickMode] owns the actual sheet
+/// call and state update; the underlying AI Modes are unchanged.
 class _ModePill extends StatelessWidget {
   final AiMode mode;
   final VoidCallback onTap;
@@ -692,40 +698,35 @@ class _ModePill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(right: 2),
-      child: Material(
-        color: theme.colorScheme.primaryContainer.withOpacity(0.5),
+    return Material(
+      color: theme.colorScheme.primaryContainer.withOpacity(0.5),
+      borderRadius: BorderRadius.circular(20),
+      child: InkWell(
         borderRadius: BorderRadius.circular(20),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(20),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(mode.emoji, style: const TextStyle(fontSize: 15)),
-                const SizedBox(width: 5),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 92),
-                  child: Text(
-                    mode.label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.labelMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: theme.colorScheme.onPrimaryContainer,
-                    ),
-                  ),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(mode.emoji, style: const TextStyle(fontSize: 15)),
+              const SizedBox(width: 6),
+              Text(
+                'Select Model',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: theme.colorScheme.onPrimaryContainer,
                 ),
-                Icon(
-                  Icons.expand_more_rounded,
-                  size: 16,
-                  color: theme.colorScheme.onPrimaryContainer.withOpacity(0.8),
-                ),
-              ],
-            ),
+              ),
+              const SizedBox(width: 2),
+              Icon(
+                Icons.expand_more_rounded,
+                size: 16,
+                color: theme.colorScheme.onPrimaryContainer.withOpacity(0.8),
+              ),
+            ],
           ),
         ),
       ),
