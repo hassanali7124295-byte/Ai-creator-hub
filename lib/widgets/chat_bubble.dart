@@ -31,6 +31,10 @@ class ChatBubble extends StatefulWidget {
   /// Starts or stops text-to-speech playback of this message.
   final VoidCallback? onReadAloud;
 
+  /// Removes this message from the conversation. Surfaced only inside the
+  /// "More" menu (Step 18.2).
+  final VoidCallback? onDelete;
+
   /// Whether this specific message is the one currently being read aloud.
   final bool isSpeaking;
 
@@ -51,6 +55,7 @@ class ChatBubble extends StatefulWidget {
     this.onShare,
     this.onRegenerate,
     this.onReadAloud,
+    this.onDelete,
     this.isSpeaking = false,
     this.animate = false,
     this.onStreamTick,
@@ -61,6 +66,9 @@ class ChatBubble extends StatefulWidget {
 }
 
 enum _Feedback { none, liked, disliked }
+
+/// Actions available inside the "More" popup menu (Step 18.2).
+enum _MoreAction { share, regenerate, like, dislike, delete }
 
 class _ChatBubbleState extends State<ChatBubble> {
   // Local-only UI feedback (not persisted) — a lightweight way to let
@@ -76,6 +84,10 @@ class _ChatBubbleState extends State<ChatBubble> {
   // by default and only shown once the person taps or long-presses the
   // AI reply — instead of appearing automatically once streaming ends.
   bool _actionsVisible = false;
+
+  // Step 18.2: anchor for the "More" popup menu so it opens right below
+  // the "..." button instead of at a fixed screen position.
+  final GlobalKey _moreButtonKey = GlobalKey();
 
   bool get _isAiReply => !widget.message.isUser && !widget.message.isError;
 
@@ -156,6 +168,139 @@ class _ChatBubbleState extends State<ChatBubble> {
       const SnackBar(
         content: Text('Thanks for the feedback!'),
         duration: Duration(seconds: 1),
+      ),
+    );
+  }
+
+  // Step 18.2: the secondary actions (Share, Regenerate, Like, Dislike,
+  // Delete) now live behind a single "More" button instead of being shown
+  // inline, ChatGPT-style. Opens as a rounded popup menu anchored to the
+  // "..." button.
+  Future<void> _showMoreMenu() async {
+    HapticFeedback.selectionClick();
+    final theme = Theme.of(context);
+    final renderBox =
+        _moreButtonKey.currentContext?.findRenderObject() as RenderBox?;
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (renderBox == null || overlay == null) return;
+
+    final buttonTopLeft =
+        renderBox.localToGlobal(Offset.zero, ancestor: overlay);
+    final position = RelativeRect.fromLTRB(
+      buttonTopLeft.dx,
+      buttonTopLeft.dy + renderBox.size.height + 6,
+      overlay.size.width - (buttonTopLeft.dx + renderBox.size.width),
+      0,
+    );
+
+    final selection = await showMenu<_MoreAction>(
+      context: context,
+      position: position,
+      color: theme.colorScheme.surfaceContainerHigh,
+      elevation: 8,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
+      constraints: const BoxConstraints(minWidth: 200),
+      items: [
+        _menuItem(
+          theme,
+          action: _MoreAction.share,
+          icon: Icons.ios_share_outlined,
+          label: 'Share',
+          enabled: widget.onShare != null,
+        ),
+        _menuItem(
+          theme,
+          action: _MoreAction.regenerate,
+          icon: Icons.refresh_outlined,
+          label: 'Regenerate',
+          enabled: widget.onRegenerate != null,
+        ),
+        _menuItem(
+          theme,
+          action: _MoreAction.like,
+          icon: _feedback == _Feedback.liked
+              ? Icons.thumb_up_rounded
+              : Icons.thumb_up_outlined,
+          label: 'Like',
+          active: _feedback == _Feedback.liked,
+        ),
+        _menuItem(
+          theme,
+          action: _MoreAction.dislike,
+          icon: _feedback == _Feedback.disliked
+              ? Icons.thumb_down_rounded
+              : Icons.thumb_down_outlined,
+          label: 'Dislike',
+          active: _feedback == _Feedback.disliked,
+        ),
+        const PopupMenuDivider(height: 8),
+        _menuItem(
+          theme,
+          action: _MoreAction.delete,
+          icon: Icons.delete_outline_rounded,
+          label: 'Delete',
+          enabled: widget.onDelete != null,
+          destructive: true,
+        ),
+      ],
+    );
+
+    if (!mounted || selection == null) return;
+    switch (selection) {
+      case _MoreAction.share:
+        widget.onShare?.call();
+        break;
+      case _MoreAction.regenerate:
+        widget.onRegenerate?.call();
+        break;
+      case _MoreAction.like:
+        _toggleLike();
+        break;
+      case _MoreAction.dislike:
+        _toggleDislike();
+        break;
+      case _MoreAction.delete:
+        widget.onDelete?.call();
+        break;
+    }
+  }
+
+  PopupMenuItem<_MoreAction> _menuItem(
+    ThemeData theme, {
+    required _MoreAction action,
+    required IconData icon,
+    required String label,
+    bool enabled = true,
+    bool active = false,
+    bool destructive = false,
+  }) {
+    final color = !enabled
+        ? theme.colorScheme.onSurfaceVariant.withOpacity(0.35)
+        : destructive
+            ? theme.colorScheme.error
+            : active
+                ? theme.colorScheme.primary
+                : theme.colorScheme.onSurfaceVariant;
+
+    return PopupMenuItem<_MoreAction>(
+      value: action,
+      enabled: enabled,
+      height: 44,
+      child: Row(
+        children: [
+          Icon(icon, size: 19, color: color),
+          const SizedBox(width: 12),
+          Text(
+            label,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: color,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -398,44 +543,28 @@ class _ChatBubbleState extends State<ChatBubble> {
                 child: Wrap(
                   spacing: 2,
                   children: [
+                    // Step 18.2: the row is trimmed down to the three
+                    // primary actions — Copy, Speak, More — ChatGPT-style.
+                    // Share/Regenerate/Like/Dislike/Delete now live inside
+                    // the "More" popup menu.
                     _ActionIcon(
                       icon: Icons.copy_outlined,
                       tooltip: 'Copy',
                       onTap: widget.onCopy,
                     ),
                     _ActionIcon(
-                      icon: Icons.ios_share_outlined,
-                      tooltip: 'Share',
-                      onTap: widget.onShare,
-                    ),
-                    _ActionIcon(
-                      icon: Icons.refresh_outlined,
-                      tooltip: 'Regenerate',
-                      onTap: widget.onRegenerate,
-                    ),
-                    _ActionIcon(
                       icon: widget.isSpeaking
                           ? Icons.stop_circle_rounded
                           : Icons.volume_up_outlined,
-                      tooltip: widget.isSpeaking ? 'Stop' : 'Read aloud',
+                      tooltip: widget.isSpeaking ? 'Stop' : 'Speak',
                       onTap: widget.onReadAloud,
                       active: widget.isSpeaking,
                     ),
                     _ActionIcon(
-                      icon: _feedback == _Feedback.liked
-                          ? Icons.thumb_up_rounded
-                          : Icons.thumb_up_outlined,
-                      tooltip: 'Like',
-                      onTap: _toggleLike,
-                      active: _feedback == _Feedback.liked,
-                    ),
-                    _ActionIcon(
-                      icon: _feedback == _Feedback.disliked
-                          ? Icons.thumb_down_rounded
-                          : Icons.thumb_down_outlined,
-                      tooltip: 'Dislike',
-                      onTap: _toggleDislike,
-                      active: _feedback == _Feedback.disliked,
+                      key: _moreButtonKey,
+                      icon: Icons.more_horiz_rounded,
+                      tooltip: 'More',
+                      onTap: _showMoreMenu,
                     ),
                   ],
                 ),
@@ -459,6 +588,7 @@ class _ActionIcon extends StatefulWidget {
   final bool active;
 
   const _ActionIcon({
+    super.key,
     required this.icon,
     required this.tooltip,
     required this.onTap,
