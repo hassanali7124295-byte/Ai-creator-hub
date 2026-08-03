@@ -14,9 +14,36 @@ API integration and every image-generation model/widget/service that only
 existed to support them. Chat is now the app's main feature and its
 default screen.
 
-### What's in the app
+## Step 17: premium pass — icon, drawer-only nav, action icons, voice
 
-Four tabs:
+Pak AI now looks and feels closer to a flagship AI app:
+
+- **App icon**: a custom black + emerald glassmorphism adaptive icon (chat
+  bubble merged with "P", metallic gradient, soft glow) replaces the
+  default Flutter icon — see `assets/icon/` and the
+  `flutter_launcher_icons` config in `pubspec.yaml`.
+- **No more bottom nav bar.** `ChatScreen` is now the app's single root
+  screen. Its drawer is the only navigation surface: New Chat, the
+  conversation list, then History, Settings, Profile, Rate App, Privacy
+  Policy, and About Pak AI.
+- **Premium action icons**: Copy/Share/Regenerate/Read Aloud now render
+  outlined by default and switch to a filled/glowing state only while
+  active (e.g. Read Aloud while speaking), matching the pattern most
+  AI chat apps use — plus larger (40dp) touch targets and a softer ripple.
+- **Natural male voice for Read Aloud**: `TtsVoiceService` (in
+  `lib/core/services/tts_voice_service.dart`) scans the device's
+  available voices for an English male voice (or the best untagged
+  fallback), and sets a natural, non-default speech rate and pitch —
+  falling back to the engine default voice on devices that don't expose
+  voice enumeration, so offline/older devices keep working.
+- **New screens**: `AboutScreen` and `PrivacyPolicyScreen` (fully
+  on-device static content, no hosting required).
+
+Four tabs became "Chat is the only screen; everything else is a drawer
+destination" — the History/Settings/Profile screens themselves are
+unchanged, only how you reach them changed.
+
+## Four tabs → drawer destinations
 
 - **Chat** — the heart of the app. Talk to Pak AI (powered by Gemini),
   with Markdown replies, streaming reveal, copy/share/regenerate/read
@@ -24,7 +51,8 @@ Four tabs:
   switching chats without leaving the screen.
 - **History** — every saved conversation as a full page: search, pin,
   rename, and delete. Tapping one opens it directly in Chat.
-- **Settings** — Gemini API key management and light/dark/system theme.
+- **Settings** — Gemini API key management, light/dark/system theme,
+  About Pak AI, and Privacy Policy.
 - **Profile** — placeholder, ready for future account features.
 
 ### AI Modes
@@ -64,6 +92,8 @@ nothing in that folder is hand-written or approximated.
 ```bash
 flutter create . --platforms=android --org com.aicreatorhub --project-name ai_creator_hub
 flutter pub get
+sed -i 's/android:label="[^"]*"/android:label="Pak AI"/' android/app/src/main/AndroidManifest.xml
+dart run flutter_launcher_icons
 flutter run
 ```
 
@@ -83,8 +113,11 @@ Every push to `main` (and manual runs via the **Actions** tab →
 2. Run `flutter create . --platforms=android` to generate a real
    `android/` folder from that exact SDK
 3. Run `flutter pub get`
-4. Build a release APK
-5. Upload it as a workflow artifact
+4. Patch `android:label` to "Pak AI" (step 2 always writes the label
+   from `--project-name`, so this runs on every fresh `android/`)
+5. Generate the adaptive launcher icon via `flutter_launcher_icons`
+6. Build a release APK
+7. Upload it as a workflow artifact
 
 Download the APK from the workflow run's **Artifacts** section once it
 finishes — no local Flutter setup required.

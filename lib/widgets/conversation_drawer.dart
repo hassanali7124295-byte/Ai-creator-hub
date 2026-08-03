@@ -1,14 +1,25 @@
 import 'package:animate_do/animate_do.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../core/providers/conversation_provider.dart';
 import '../models/conversation.dart';
+import '../screens/about_screen.dart';
+import '../screens/history_screen.dart';
+import '../screens/privacy_policy_screen.dart';
+import '../screens/profile_screen.dart';
+import '../screens/settings_screen.dart';
 
 /// The conversation history sidebar — a Material 3 [Drawer] listing every
 /// saved chat, with search, pinning, rename, and delete. Rendered inside
 /// [ChatScreen]'s local emerald `Theme` override, so it automatically picks
 /// up the same "Emerald + Graphite" palette as the rest of the chat UI.
+///
+/// Step 17: this is now the app's *only* navigation surface (the bottom
+/// nav bar is gone). Besides the conversation list, it links out to the
+/// full History screen, Settings, Profile, Rate App, Privacy Policy, and
+/// About Pak AI via [_DrawerNavSection] at the bottom.
 class ConversationDrawer extends StatefulWidget {
   final String? currentId;
   final ValueChanged<String> onSelect;
@@ -140,22 +151,58 @@ class _ConversationDrawerState extends State<ConversationDrawer> {
         child: Column(
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
               child: Row(
                 children: [
-                  Icon(Icons.forum_rounded, color: theme.colorScheme.primary),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      'Chats',
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w700,
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(14),
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          theme.colorScheme.primary,
+                          theme.colorScheme.primary.withOpacity(0.6),
+                        ],
                       ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: theme.colorScheme.primary.withOpacity(0.35),
+                          blurRadius: 16,
+                          spreadRadius: 0.5,
+                        ),
+                      ],
+                    ),
+                    child: const Icon(Icons.forum_rounded,
+                        color: Colors.white, size: 22),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Pak AI',
+                          style: theme.textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        Text(
+                          'v1.0.0',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
               ),
             ),
+            const Divider(height: 1, indent: 16, endIndent: 16),
+            const SizedBox(height: 8),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: FilledButton.tonalIcon(
@@ -220,8 +267,114 @@ class _ConversationDrawerState extends State<ConversationDrawer> {
                           ],
                         ),
             ),
+            const Divider(height: 1, indent: 16, endIndent: 16),
+            const _DrawerNavSection(),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Step 17: the drawer's bottom navigation block — everything that used
+/// to live in the removed bottom nav bar (History, Settings, Profile),
+/// plus Rate App / Privacy Policy / About Pak AI. Each item pushes a full
+/// screen on top of [ChatScreen] and closes the drawer first.
+class _DrawerNavSection extends StatelessWidget {
+  const _DrawerNavSection();
+
+  static const String _playStoreUrl =
+      'https://play.google.com/store/apps/details?id=com.aicreatorhub.ai_creator_hub';
+
+  Future<void> _rateApp(BuildContext context) async {
+    Navigator.of(context).pop();
+    final uri = Uri.parse(_playStoreUrl);
+    final launched = await launchUrl(uri, mode: LaunchMode.externalApplication)
+        .catchError((_) => false);
+    if (!launched && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open the Play Store.')),
+      );
+    }
+  }
+
+  void _push(BuildContext context, Widget screen) {
+    Navigator.of(context).pop();
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => screen));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final items = <({IconData icon, String label, VoidCallback onTap})>[
+      (
+        icon: Icons.history_rounded,
+        label: 'History',
+        onTap: () => _push(context, const HistoryScreen()),
+      ),
+      (
+        icon: Icons.settings_outlined,
+        label: 'Settings',
+        onTap: () => _push(context, const SettingsScreen()),
+      ),
+      (
+        icon: Icons.person_outline_rounded,
+        label: 'Profile',
+        onTap: () => _push(context, const ProfileScreen()),
+      ),
+      (
+        icon: Icons.star_outline_rounded,
+        label: 'Rate App',
+        onTap: () => _rateApp(context),
+      ),
+      (
+        icon: Icons.privacy_tip_outlined,
+        label: 'Privacy Policy',
+        onTap: () => _push(context, const PrivacyPolicyScreen()),
+      ),
+      (
+        icon: Icons.info_outline_rounded,
+        label: 'About Pak AI',
+        onTap: () => _push(context, const AboutScreen()),
+      ),
+    ];
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final item in items)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 1),
+              child: Material(
+                color: Colors.transparent,
+                borderRadius: BorderRadius.circular(14),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(14),
+                  onTap: item.onTap,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 10),
+                    child: Row(
+                      children: [
+                        Icon(item.icon,
+                            size: 20,
+                            color: theme.colorScheme.onSurfaceVariant),
+                        const SizedBox(width: 16),
+                        Text(
+                          item.label,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }

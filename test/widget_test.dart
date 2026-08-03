@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -10,23 +11,20 @@ void main() {
     SharedPreferences.setMockInitialValues({});
   });
 
-  testWidgets('App launches straight into Chat with the trimmed nav bar',
+  testWidgets(
+      'App launches straight into Chat with no bottom nav (Step 17)',
       (tester) async {
     await tester.pumpWidget(const PakAIApp());
     await tester.pumpAndSettle();
 
-    // Step 16: Chat is tab 0 (the app's default/opening screen) and its
-    // empty state greets the person immediately — no more Home dashboard.
+    // Chat is the app's single root screen -- its empty state greets the
+    // person immediately, no dashboard/tab bar in between.
     expect(find.text('What can I do\nfor you?'), findsOneWidget);
 
-    // Bottom navigation is trimmed to exactly these 4 destinations.
-    expect(find.text('Chat'), findsOneWidget);
-    expect(find.text('History'), findsOneWidget);
-    expect(find.text('Settings'), findsOneWidget);
-    expect(find.text('Profile'), findsOneWidget);
+    // Step 17: the bottom NavigationBar is gone entirely.
+    expect(find.byType(NavigationBar), findsNothing);
 
-    // The removed dashboard/tool tabs are gone.
-    expect(find.text('Home'), findsNothing);
-    expect(find.text('Tools'), findsNothing);
+    // The drawer (hamburger menu) is now the only navigation surface.
+    expect(find.byIcon(Icons.menu_rounded), findsOneWidget);
   });
 }

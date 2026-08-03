@@ -396,27 +396,27 @@ class _ChatBubbleState extends State<ChatBubble> {
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Wrap(
-                  spacing: 0,
+                  spacing: 2,
                   children: [
                     _ActionIcon(
-                      icon: Icons.copy_rounded,
+                      icon: Icons.copy_outlined,
                       tooltip: 'Copy',
                       onTap: widget.onCopy,
                     ),
                     _ActionIcon(
-                      icon: Icons.ios_share_rounded,
+                      icon: Icons.ios_share_outlined,
                       tooltip: 'Share',
                       onTap: widget.onShare,
                     ),
                     _ActionIcon(
-                      icon: Icons.refresh_rounded,
+                      icon: Icons.refresh_outlined,
                       tooltip: 'Regenerate',
                       onTap: widget.onRegenerate,
                     ),
                     _ActionIcon(
                       icon: widget.isSpeaking
                           ? Icons.stop_circle_rounded
-                          : Icons.volume_up_rounded,
+                          : Icons.volume_up_outlined,
                       tooltip: widget.isSpeaking ? 'Stop' : 'Read aloud',
                       onTap: widget.onReadAloud,
                       active: widget.isSpeaking,
@@ -497,20 +497,39 @@ class _ActionIconState extends State<_ActionIcon> {
           scale: _pressed ? 0.82 : 1.0,
           duration: const Duration(milliseconds: 120),
           curve: Curves.easeOut,
-          child: Material(
-            color: Colors.transparent,
-            shape: const CircleBorder(),
-            child: InkWell(
-              customBorder: const CircleBorder(),
-              onTap: onTap == null
-                  ? null
-                  : () {
-                      HapticFeedback.selectionClick();
-                      onTap();
-                    },
-              child: Padding(
-                padding: const EdgeInsets.all(7),
-                child: Icon(widget.icon, size: 16, color: color),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              boxShadow: widget.active
+                  ? [
+                      BoxShadow(
+                        color: theme.colorScheme.primary.withOpacity(0.28),
+                        blurRadius: 12,
+                        spreadRadius: 0.5,
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Material(
+              color: Colors.transparent,
+              shape: const CircleBorder(),
+              child: InkWell(
+                customBorder: const CircleBorder(),
+                splashColor: theme.colorScheme.primary.withOpacity(0.14),
+                highlightColor: theme.colorScheme.primary.withOpacity(0.08),
+                onTap: onTap == null
+                    ? null
+                    : () {
+                        HapticFeedback.selectionClick();
+                        onTap();
+                      },
+                child: Padding(
+                  // 40dp min touch target (18 icon + 11*2 padding = 40).
+                  padding: const EdgeInsets.all(11),
+                  child: Icon(widget.icon, size: 18, color: color),
+                ),
               ),
             ),
           ),

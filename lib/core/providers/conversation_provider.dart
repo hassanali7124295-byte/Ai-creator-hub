@@ -12,8 +12,9 @@ import '../services/conversation_storage_service.dart';
 /// existing send/regenerate/attachment logic has to change shape.
 ///
 /// Wrapped around the app once in main.dart (alongside [ThemeProvider]) so
-/// the conversation list — and the last-opened conversation — survive tab
-/// switches via [MainNavigation]'s `IndexedStack`.
+/// the conversation list — and the last-opened conversation — survive
+/// pushes to History/Settings/Profile and back (Step 17 removed the
+/// bottom nav's `IndexedStack`; [ChatScreen] is the app's single root now).
 class ConversationProvider extends ChangeNotifier {
   List<Conversation> _conversations = [];
   String? _currentId;

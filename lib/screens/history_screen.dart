@@ -5,17 +5,15 @@ import 'package:provider/provider.dart';
 import '../core/providers/conversation_provider.dart';
 import '../core/theme/chat_palette.dart';
 import '../models/conversation.dart';
-import '../widgets/main_navigation.dart';
+import 'chat_screen.dart';
 
-/// The History tab (Step 16): every saved conversation as a full-page
-/// list — search, pin, rename, delete — instead of only being reachable
-/// through [ChatScreen]'s hamburger drawer. Tapping a conversation opens
-/// it directly in Chat.
+/// The full-page History screen (Step 16), now reached from the drawer's
+/// "History" item (Step 17 removed the bottom nav tab) instead of a tab —
+/// every saved conversation with search, pin, rename, delete. Tapping a
+/// conversation switches Chat to it and pops straight back.
 ///
 /// Shares [ConversationProvider] with [ChatScreen] (both are handed the
-/// same instance from `main.dart`'s `MultiProvider`), so selecting a
-/// conversation here and switching to the Chat tab shows it already
-/// loaded — no extra plumbing needed between the two tabs.
+/// same instance from `main.dart`'s `MultiProvider`).
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
 
@@ -39,13 +37,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
     return all.where((c) => c.title.toLowerCase().contains(q)).toList();
   }
 
-  Future<void> _openConversation(BuildContext context, String id) async {
-    final provider = context.read<ConversationProvider>();
-    await provider.selectConversation(id);
-    if (!context.mounted) return;
-    // Chat lives at bottom-nav index 0 (see MainNavigation) — hop over to
-    // it now that the provider's current conversation has been switched.
-    MainNavigation.jumpToChat(context);
+  void _openConversation(BuildContext context, String id) {
+    // ChatScreen sits directly beneath History in the Navigator stack
+    // (Step 17 — no more bottom-nav tabs) — switch its conversation, then
+    // pop back to reveal it, exactly like tapping the same conversation
+    // in the drawer would.
+    ChatScreen.switchToConversation(context, id);
+    Navigator.of(context).pop();
   }
 
   Future<void> _confirmDelete(BuildContext context, Conversation c) async {

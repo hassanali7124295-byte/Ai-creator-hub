@@ -3,6 +3,8 @@ import 'package:provider/provider.dart';
 
 import '../core/providers/theme_provider.dart';
 import '../core/services/gemini_service.dart';
+import 'about_screen.dart';
+import 'privacy_policy_screen.dart';
 
 /// Settings screen — theme switcher, Gemini API key management, and about.
 class SettingsScreen extends StatefulWidget {
@@ -175,18 +177,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
           Card(
             child: Column(
               children: [
-                const ListTile(
-                  leading: Icon(Icons.info_outline_rounded),
-                  title: Text('Pak AI'),
-                  subtitle: Text('Version 1.0.0'),
+                ListTile(
+                  leading: const Icon(Icons.info_outline_rounded),
+                  title: const Text('About Pak AI'),
+                  subtitle: const Text('Version 1.0.0'),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const AboutScreen()),
+                  ),
                 ),
                 const Divider(height: 1, indent: 16, endIndent: 16),
                 ListTile(
                   leading: const Icon(Icons.privacy_tip_outlined),
                   title: const Text('Privacy Policy'),
-                  onTap: () {
-                    // TODO: link to hosted privacy policy (required for AdMob + Play Store).
-                  },
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const PrivacyPolicyScreen(),
+                    ),
+                  ),
                 ),
               ],
             ),

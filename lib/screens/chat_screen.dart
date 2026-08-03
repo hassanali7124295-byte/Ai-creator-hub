@@ -10,6 +10,7 @@ import '../core/providers/conversation_provider.dart';
 import '../core/services/attachment_processor_service.dart';
 import '../core/services/attachment_service.dart';
 import '../core/services/gemini_service.dart';
+import '../core/services/tts_voice_service.dart';
 import '../core/theme/chat_palette.dart';
 import '../models/ai_mode.dart';
 import '../models/chat_attachment.dart';
@@ -43,6 +44,17 @@ class _PendingAttachment {
 /// history, and copy-to-clipboard on any message.
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
+
+  /// Step 17: with the bottom nav gone, [ChatScreen] is the single root
+  /// screen and History/Settings/Profile are pushed on top of it instead
+  /// of living in an `IndexedStack`. [HistoryScreen] calls this (then
+  /// pops itself) so picking a conversation there reloads the same
+  /// `_messages` list the drawer's own conversation picker uses — instead
+  /// of only flipping [ConversationProvider]'s `currentId` and leaving
+  /// Chat's local state stale.
+  static void switchToConversation(BuildContext context, String id) {
+    context.findAncestorStateOfType<_ChatScreenState>()?._switchConversation(id);
+  }
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -99,6 +111,12 @@ class _ChatScreenState extends State<ChatScreen> {
     _tts.setErrorHandler((_) {
       if (mounted) setState(() => _speakingIndex = null);
     });
+    // Fire-and-forget: picks the best available male English voice and a
+    // natural rate/pitch. Runs once per screen lifetime; if it's still in
+    // flight when the person taps "Read aloud" the first time, that first
+    // utterance just uses the engine default and every one after sounds
+    // right — never blocks or delays the tap itself.
+    unawaited(TtsVoiceService.configureNaturalMaleVoice(_tts));
   }
 
   Future<void> _loadHistory() async {

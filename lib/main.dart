@@ -4,7 +4,7 @@ import 'package:provider/provider.dart';
 import 'core/theme/app_theme.dart';
 import 'core/providers/theme_provider.dart';
 import 'core/providers/conversation_provider.dart';
-import 'widgets/main_navigation.dart';
+import 'screens/chat_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -16,10 +16,12 @@ void main() {
   runApp(const PakAIApp());
 }
 
-/// Step 16: renamed from `AiCreatorHubApp` — AI Creator Hub's multi-tool
-/// dashboard has been refocused into Pak AI, a single premium AI chat app.
-/// Nothing about the app's bootstrap (providers, theming) changed shape,
-/// only the name and the [MainNavigation] tabs it hosts.
+/// Step 16 renamed this from `AiCreatorHubApp`; Step 17 removed the bottom
+/// tab bar entirely — [ChatScreen] is now the app's single root screen,
+/// and its drawer (see `ConversationDrawer`) is the only navigation
+/// surface, linking out to History, Settings, Profile, Rate App, Privacy
+/// Policy, and About. Nothing about the app's bootstrap (providers,
+/// theming) changed shape.
 class PakAIApp extends StatelessWidget {
   const PakAIApp({super.key});
 
@@ -30,8 +32,8 @@ class PakAIApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => ThemeProvider()),
         // Owns the multi-conversation chat list (Step 12) — created once
         // here, not inside ChatScreen, so it (and the "last opened chat"
-        // it remembers) survives tab switches via MainNavigation's
-        // IndexedStack for the whole lifetime of the app.
+        // it remembers) survives pushes to History/Settings/Profile and
+        // back for the whole lifetime of the app.
         ChangeNotifierProvider(create: (_) => ConversationProvider()),
       ],
       child: Consumer<ThemeProvider>(
@@ -42,7 +44,7 @@ class PakAIApp extends StatelessWidget {
             theme: AppTheme.lightTheme,
             darkTheme: AppTheme.darkTheme,
             themeMode: themeProvider.themeMode,
-            home: const MainNavigation(),
+            home: const ChatScreen(),
           );
         },
       ),

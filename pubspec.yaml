@@ -40,15 +40,38 @@ dependencies:
   share_plus: ^10.1.3      # native share sheet for the "Share" action
   flutter_tts: ^4.2.0      # on-device text-to-speech for "Read Aloud"
 
+  # Step 17: Rate App (Play Store deep link) and outbound links from the
+  # About / Privacy Policy screens.
+  url_launcher: ^6.3.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
 
+  # Step 17: generates the Android adaptive launcher icon (foreground +
+  # background layers below) from our premium Pak AI icon assets. Run via
+  # `dart run flutter_launcher_icons` — wired into the CI workflow right
+  # after `flutter create` regenerates android/, since that's the only
+  # place the mipmap folders exist for it to write into.
+  flutter_launcher_icons: ^0.14.3
+
 flutter:
   uses-material-design: true
 
-  # Uncomment and add real assets once app icon / splash are prepared.
-  # assets:
-  #   - assets/images/
-  #   - assets/icons/
+  assets:
+    - assets/icon/
+
+# Step 17: premium "Pak AI" launcher icon — black + emerald glassmorphism
+# chat-bubble-merged-with-P mark. icon.png is the flat/legacy icon (used
+# on iOS and pre-Android-8 devices); icon_foreground.png / icon_background
+# .png form the Android 8+ adaptive icon (the bubble+P mark alone sits in
+# the foreground layer so the OS can mask/animate it independently of the
+# gradient background).
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "assets/icon/icon.png"
+  adaptive_icon_background: "assets/icon/icon_background.png"
+  adaptive_icon_foreground: "assets/icon/icon_foreground.png"
+  min_sdk_android: 21

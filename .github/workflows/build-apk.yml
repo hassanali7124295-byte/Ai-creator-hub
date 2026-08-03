@@ -35,11 +35,26 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Set app display name to "Pak AI"
+        # `flutter create` always writes android:label from --project-name,
+        # so every fresh android/ needs this patched back to the real
+        # user-visible app name before we build.
+        run: |
+          sed -i 's/android:label="[^"]*"/android:label="Pak AI"/' \
+            android/app/src/main/AndroidManifest.xml
+          grep -n 'android:label' android/app/src/main/AndroidManifest.xml
+
+      - name: Generate Pak AI launcher icon
+        # Writes the adaptive icon (mipmap-anydpi-v26 + all mipmap-*dpi
+        # foreground/background PNGs) into the android/ that flutter create
+        # just generated, from assets/icon/icon*.png.
+        run: dart run flutter_launcher_icons
+
       - name: Build release APK
         run: flutter build apk --release
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ai-creator-hub-release-apk
+          name: pak-ai-release-apk
           path: build/app/outputs/flutter-apk/app-release.apk
