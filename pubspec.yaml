@@ -42,6 +42,11 @@ dependencies:
   share_plus: ^10.1.3      # native share sheet for the "Share" action
   flutter_tts: ^4.2.0      # on-device text-to-speech for "Read Aloud"
 
+  # Image Generator "Download" (Step 15.5): saves bytes straight to the
+  # device's Photos/Pictures gallery — separate from Share (share_plus
+  # above), which just hands the file to the OS share sheet.
+  gal: ^2.3.2
+
   # --- Added in later phases, not needed for Step 1 ---
   # google_mobile_ads: ^5.1.0   # Phase 4 - requires AdMob App ID manifest setup first
   # flutter_svg: ^2.0.10+1      # add when custom SVG assets are introduced

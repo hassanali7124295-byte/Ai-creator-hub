@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:animate_do/animate_do.dart';
 import 'package:flutter/material.dart';
+import 'package:gal/gal.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../core/services/image_generation_service.dart';
@@ -200,16 +201,50 @@ class _ImageScreenState extends State<ImageScreen>
     setState(() => _gallery.removeWhere((g) => g.id == image.id));
   }
 
+  /// Saves the image permanently to the device's Photos/Pictures gallery
+  /// via the `gal` plugin (`Gal.putImageBytes`) — a real on-device save,
+  /// not the Share sheet. [image.bytes] are already PNG or JPEG exactly
+  /// as Pollinations returned them (see
+  /// [PollinationsImageGenerationService]), so they're written through
+  /// unmodified; the file extension just reflects that untouched format.
+  ///
+  /// `gal` handles the platform-appropriate destination itself — the
+  /// Pictures/Photos library on Android (via `MediaStore`, so it shows up
+  /// in the device's Gallery/Photos app and — depending on OEM/gallery
+  /// app — under Pictures or Download) and the Photos library on iOS —
+  /// and requests the OS permission prompt the first time it's needed.
+  Future<void> _download(GeneratedImage image) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      // image.bytes are already exactly what Pollinations returned (PNG
+      // or JPEG) — passed straight through to Gal with no re-encoding
+      // (Task 2). Gal writes them to the gallery under this name/album.
+      await Gal.putImageBytes(
+        image.bytes,
+        name: 'ai_creator_hub_${image.id}',
+        album: 'AI Creator Hub',
+      );
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Image saved successfully')),
+      );
+    } on GalException catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text(e.type.message)));
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text('Could not save image: $e')));
+    }
+  }
+
   /// Writes the image to a temp file and hands it to the OS share sheet.
-  /// Used for both Share and Download — without a gallery-write plugin
-  /// (deliberately not added; new pubspec dependencies aren't allowed),
-  /// routing "Download" through the same native share sheet lets the
-  /// person pick "Save Image"/"Save to Files" themselves.
-  Future<void> _shareImage(GeneratedImage image, {required String shareText}) async {
+  /// Share-only now — Download (above) saves straight to the gallery via
+  /// `gal` instead of going through this share flow.
+  Future<void> _share(GeneratedImage image) async {
     try {
       final file = File('${Directory.systemTemp.path}/ai_creator_hub_${image.id}.png');
       await file.writeAsBytes(image.bytes, flush: true);
-      await Share.shareXFiles([XFile(file.path)], text: shareText);
+      await Share.shareXFiles([XFile(file.path)], text: image.prompt);
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -217,12 +252,6 @@ class _ImageScreenState extends State<ImageScreen>
       );
     }
   }
-
-  void _download(GeneratedImage image) =>
-      _shareImage(image, shareText: 'Save this image');
-
-  void _share(GeneratedImage image) =>
-      _shareImage(image, shareText: image.prompt);
 
   void _openFullscreen(int index) {
     Navigator.of(context).push(

@@ -191,57 +191,89 @@ class PollinationsImageGenerationService implements ImageGenerationService {
     return buffer.toString();
   }
 
-  /// Maps the HTTP response to either the decoded image bytes or a
-  /// friendly [ImageGenerationException], never letting a bad/unexpected
-  /// response crash the caller (Task 9).
+  /// Maps the HTTP response to either the decoded image bytes or an
+  /// [ImageGenerationException] carrying the *exact* server response
+  /// (Task 5) — never a generic "try again" message — so a runtime
+  /// failure that only shows up on-device is diagnosable straight from
+  /// the thrown message.
+  ///
+  /// **Step 15.2 audit** (still holds): [http.Response.bodyBytes] (raw
+  /// `Uint8List`), never `.body`, is what's returned as image data; no
+  /// JSON parsing happens on the image-success path; both `image/jpeg`
+  /// and `image/png` are accepted via a generic `image/` prefix check.
   Uint8List _parseImageBytes(http.Response response) {
-    final contentType = response.headers['content-type'] ?? '';
+    final contentType = response.headers['content-type'] ?? '(none)';
+    final contentLength = response.headers['content-length'] ?? '(none)';
+    final bytes = response.bodyBytes;
+    final isImage = contentType.startsWith('image/');
 
-    // ---- Step 15.1 debug logging: status code + content-type always;
-    // response body only when it's NOT an image (an image body is binary
-    // and useless/huge to print). ----
+    // ---- Step 15.3 debug logging ----
     // ignore: avoid_print
     print('[Pollinations] status=${response.statusCode} '
-        'content-type=$contentType');
-    if (!contentType.startsWith('image/')) {
+        'content-type=$contentType content-length=$contentLength '
+        'bodyBytes.length=${bytes.length}');
+
+    if (isImage) {
       // ignore: avoid_print
-      print('[Pollinations] body: ${response.body}');
+      print('[Pollinations] first32Bytes=${_hexPreview(bytes, 32)}');
+      // ignore: avoid_print
+      print('[Pollinations] signature=${_signatureOf(bytes)}');
+    } else {
+      // Content-Type says this ISN'T an image — dump the entire body,
+      // not a snippet, so whatever the server actually said (HTML error
+      // page, JSON error, plain text, empty string, ...) is fully visible.
+      // ignore: avoid_print
+      print('[Pollinations] FULL body (${response.body.length} chars): '
+          '${response.body}');
     }
 
-    if (response.statusCode == 200) {
-      if (contentType.startsWith('image/') && response.bodyBytes.isNotEmpty) {
-        return response.bodyBytes;
-      }
-      throw const ImageGenerationException(
-        'Pollinations returned an unexpected response. Please try again.',
-      );
-    }
-
-    if (response.statusCode == 429) {
-      throw const ImageGenerationException(
-        'Pollinations is rate-limiting requests right now. Please wait a moment and try again.',
-      );
-    }
-    if (response.statusCode == 402) {
-      throw const ImageGenerationException(
-        'Pollinations has run out of free generation budget for now. Please try again later.',
-      );
-    }
-    if (response.statusCode == 401) {
-      throw const ImageGenerationException(
-        'Pollinations rejected the request as unauthorized. Please try again later.',
-      );
-    }
-    if (response.statusCode == 502 || response.statusCode == 503) {
-      throw const ImageGenerationException(
-        'Pollinations is temporarily unavailable. Please try again in a moment.',
+    // Every failure path below includes the exact status, Content-Type,
+    // and (for non-image responses) body text the server actually sent —
+    // no generic "please try again" placeholders.
+    if (response.statusCode == 200 && isImage) {
+      if (bytes.isNotEmpty) return bytes;
+      throw ImageGenerationException(
+        'Pollinations returned HTTP 200 with Content-Type: $contentType '
+        'but an EMPTY body (bodyBytes.length=0, Content-Length header: '
+        '$contentLength).',
       );
     }
 
     throw ImageGenerationException(
-      'Pollinations rejected this request (${response.statusCode}): '
-      '${_extractApiErrorMessage(response.body)}',
+      'Pollinations request failed — '
+      'HTTP ${response.statusCode}, Content-Type: $contentType, '
+      'Content-Length: $contentLength, bodyBytes.length=${bytes.length}. '
+      'Server response: ${isImage ? '<${bytes.length} bytes of $contentType data, not returned as an image — see signature=${_signatureOf(bytes)}>' : (response.body.isEmpty ? '(empty body)' : response.body)}',
     );
+  }
+
+  /// Renders up to [count] bytes of [bytes] as space-separated hex pairs
+  /// (e.g. `ff d8 ff e0 00 00 ...`) for the debug log — lets you eyeball
+  /// the real JPEG/PNG magic-number header and confirm the bytes Flutter
+  /// received are an actual image and not e.g. `3c 68 74 6d 6c` (`<html`)
+  /// or `7b 22 65 72` (`{"er`, a JSON error body).
+  String _hexPreview(Uint8List bytes, int count) {
+    final preview = bytes.take(count);
+    return preview
+        .map((b) => b.toRadixString(16).padLeft(2, '0'))
+        .join(' ');
+  }
+
+  /// Checks the leading magic-number bytes against the documented JPEG
+  /// and PNG signatures and reports what was actually found, so a
+  /// mismatched/truncated/corrupted payload is obvious in the log even
+  /// when the HTTP status and Content-Type both looked fine.
+  String _signatureOf(Uint8List bytes) {
+    const jpeg = [0xFF, 0xD8, 0xFF];
+    const png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+    bool matches(List<int> magic) =>
+        bytes.length >= magic.length &&
+        List.generate(magic.length, (i) => bytes[i] == magic[i])
+            .every((ok) => ok);
+    if (matches(jpeg)) return 'JPEG (ff d8 ff)';
+    if (matches(png)) return 'PNG (89 50 4e 47 0d 0a 1a 0a)';
+    return 'UNRECOGNIZED (no JPEG/PNG signature match — '
+        'got ${_hexPreview(bytes, 8)})';
   }
 
   /// Pulls `error.message` out of Pollinations' documented JSON error
@@ -249,6 +281,14 @@ class PollinationsImageGenerationService implements ImageGenerationService {
   /// so a failure shows the real, specific reason instead of a made-up
   /// generic string. Falls back to the raw body if the JSON doesn't match
   /// that shape, and never throws — this is purely a best-effort helper.
+  ///
+  /// **Step 15.3**: no longer called — [_parseImageBytes] now embeds the
+  /// server's exact response text directly in every thrown exception
+  /// (Task 5) instead of extracting/reformatting just an `error.message`
+  /// field, so this JSON-shape-specific extraction is redundant. Left
+  /// unused-but-intact rather than deleted, since removing it would be a
+  /// larger diff than this debugging pass calls for.
+  // ignore: unused_element
   String _extractApiErrorMessage(String body) {
     try {
       final decoded = jsonDecode(body);
