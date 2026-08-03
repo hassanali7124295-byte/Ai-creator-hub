@@ -11,8 +11,10 @@ import '../core/services/attachment_processor_service.dart';
 import '../core/services/attachment_service.dart';
 import '../core/services/gemini_service.dart';
 import '../core/theme/chat_palette.dart';
+import '../models/ai_mode.dart';
 import '../models/chat_attachment.dart';
 import '../models/chat_message.dart';
+import '../widgets/ai_mode_sheet.dart';
 import '../widgets/attachment_preview.dart';
 import '../widgets/attachment_sheet.dart';
 import '../widgets/chat_bubble.dart';
@@ -75,6 +77,13 @@ class _ChatScreenState extends State<ChatScreen> {
   // conversation than the one already open (a same-conversation tap is a
   // no-op).
   String? _conversationId;
+
+  // AI Modes (Step 16): which persona/system-prompt overlay is active for
+  // the *next* message sent in this chat — see [AiModeX.systemPrompt] and
+  // [GeminiService.sendMessage]'s `modeInstruction` parameter. Purely
+  // client-side UI state, not persisted with the conversation, so every
+  // chat starts fresh in General AI mode.
+  AiMode _mode = AiMode.general;
 
   @override
   void initState() {
@@ -225,6 +234,7 @@ class _ChatScreenState extends State<ChatScreen> {
         outgoingText,
         history: history,
         attachments: attachmentPart != null ? [attachmentPart] : const [],
+        modeInstruction: _mode.systemPrompt,
       );
 
       if (!mounted) return;
@@ -331,6 +341,7 @@ class _ChatScreenState extends State<ChatScreen> {
       final reply = await GeminiService.sendMessage(
         userMessage.text,
         history: history,
+        modeInstruction: _mode.systemPrompt,
       );
 
       if (!mounted) return;
@@ -435,6 +446,15 @@ class _ChatScreenState extends State<ChatScreen> {
         TextSelection.collapsed(offset: text.length);
   }
 
+  /// Opens the AI Modes sheet and applies the chosen mode, if any, to the
+  /// *next* message sent — see [AiModeX.systemPrompt].
+  Future<void> _pickMode() async {
+    HapticFeedback.selectionClick();
+    final chosen = await showAiModeSheet(context, _mode);
+    if (chosen == null || !mounted || chosen == _mode) return;
+    setState(() => _mode = chosen);
+  }
+
   /// Placeholder for future speech-to-text input.
   void _onVoiceTap() {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -492,6 +512,8 @@ class _ChatScreenState extends State<ChatScreen> {
             overflow: TextOverflow.ellipsis,
           ),
           actions: [
+            _ModePill(mode: _mode, onTap: _pickMode),
+            const SizedBox(width: 2),
             _AppBarIconButton(
               tooltip: 'New chat',
               icon: Icons.mode_edit_outline_rounded,
@@ -633,6 +655,60 @@ class _ChatScreenState extends State<ChatScreen> {
               onVoice: _onVoiceTap,
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The AI Modes entry point in the app bar: a small pill showing the
+/// active mode's emoji + label, tapped to open [showAiModeSheet]. Purely
+/// presentational — [ChatScreen._pickMode] owns the actual sheet call and
+/// state update.
+class _ModePill extends StatelessWidget {
+  final AiMode mode;
+  final VoidCallback onTap;
+
+  const _ModePill({required this.mode, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(right: 2),
+      child: Material(
+        color: theme.colorScheme.primaryContainer.withOpacity(0.5),
+        borderRadius: BorderRadius.circular(20),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(20),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(mode.emoji, style: const TextStyle(fontSize: 15)),
+                const SizedBox(width: 5),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 92),
+                  child: Text(
+                    mode.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: theme.colorScheme.onPrimaryContainer,
+                    ),
+                  ),
+                ),
+                Icon(
+                  Icons.expand_more_rounded,
+                  size: 16,
+                  color: theme.colorScheme.onPrimaryContainer.withOpacity(0.8),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -1014,7 +1090,7 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                   textInputAction: TextInputAction.send,
                   onSubmitted: (_) => onSend(),
                   decoration: InputDecoration(
-                    hintText: 'Message AI Creator Hub...',
+                    hintText: 'Message Pak AI...',
                     hintStyle: TextStyle(
                       color: theme.colorScheme.onSurfaceVariant.withOpacity(0.7),
                     ),

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-/// Centralized theme configuration for AI Creator Hub.
+/// Centralized theme configuration for Pak AI.
 ///
 /// Design language: modern "premium AI product" look —
 /// deep indigo/violet primary, soft rounded cards, subtle elevation,

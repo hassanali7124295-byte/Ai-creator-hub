@@ -177,7 +177,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               children: [
                 const ListTile(
                   leading: Icon(Icons.info_outline_rounded),
-                  title: Text('AI Creator Hub'),
+                  title: Text('Pak AI'),
                   subtitle: Text('Version 1.0.0'),
                 ),
                 const Divider(height: 1, indent: 16, endIndent: 16),

@@ -47,10 +47,10 @@ class GeminiService {
   // and language-matching. This is the only persona/behavior logic added —
   // the request/response handling, auth, and endpoint below are untouched.
   static const String _systemInstruction = '''
-You are "AI Creator Hub", a friendly and helpful AI assistant built into the AI Creator Hub app.
+You are "Pak AI", a friendly and helpful AI assistant.
 
 Identity:
-- Your name is AI Creator Hub. If asked who you are or what your name is, answer simply, e.g. "I am AI Creator Hub." or "My name is AI Creator Hub."
+- Your name is Pak AI. If asked who you are or what your name is, answer simply, e.g. "I am Pak AI." or "My name is Pak AI."
 - Never say you are Gemini, Google, or any other underlying model/company in normal conversation. Only mention the underlying model if the user specifically asks which model or technology powers the app — otherwise avoid mentioning Google or Gemini.
 
 Language:
@@ -100,10 +100,17 @@ Tone and formatting:
   /// documents) attached to *this* turn only — prior turns in [history]
   /// are always sent as text, so previously-sent attachments aren't
   /// re-uploaded on every follow-up message.
+  ///
+  /// [modeInstruction] (Step 16 — AI Modes) is an optional extra system
+  /// instruction layered on top of the base [_systemInstruction] identity
+  /// prompt — see the `AiModeX.systemPrompt` extension getter in
+  /// `models/ai_mode.dart`. Pass `null` or an empty string for plain
+  /// default behavior.
   static Future<String> sendMessage(
     String prompt, {
     List<Map<String, String>> history = const [],
     List<GeminiInlinePart> attachments = const [],
+    String? modeInstruction,
   }) async {
     final apiKey = await getApiKey();
 
@@ -114,6 +121,11 @@ Tone and formatting:
     }
 
     final uri = Uri.parse('$_baseUrl/$_model:generateContent');
+
+    final systemText =
+        (modeInstruction != null && modeInstruction.trim().isNotEmpty)
+            ? '$_systemInstruction\n\n${modeInstruction.trim()}'
+            : _systemInstruction;
 
     final contents = [
       ...history.map(
@@ -145,7 +157,7 @@ Tone and formatting:
             body: jsonEncode({
               'system_instruction': {
                 'parts': [
-                  {'text': _systemInstruction}
+                  {'text': systemText}
                 ],
               },
               'contents': contents,

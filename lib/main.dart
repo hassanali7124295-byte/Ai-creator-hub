@@ -13,11 +13,15 @@ void main() {
   // (Phase 4, once google_mobile_ads is added back to pubspec.yaml) will
   // be wired in here.
 
-  runApp(const AiCreatorHubApp());
+  runApp(const PakAIApp());
 }
 
-class AiCreatorHubApp extends StatelessWidget {
-  const AiCreatorHubApp({super.key});
+/// Step 16: renamed from `AiCreatorHubApp` — AI Creator Hub's multi-tool
+/// dashboard has been refocused into Pak AI, a single premium AI chat app.
+/// Nothing about the app's bootstrap (providers, theming) changed shape,
+/// only the name and the [MainNavigation] tabs it hosts.
+class PakAIApp extends StatelessWidget {
+  const PakAIApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -33,7 +37,7 @@ class AiCreatorHubApp extends StatelessWidget {
       child: Consumer<ThemeProvider>(
         builder: (context, themeProvider, _) {
           return MaterialApp(
-            title: 'AI Creator Hub',
+            title: 'Pak AI',
             debugShowCheckedModeBanner: false,
             theme: AppTheme.lightTheme,
             darkTheme: AppTheme.darkTheme,

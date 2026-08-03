@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 
-/// Temporary placeholder body shown for screens that will be fully
-/// implemented in a later phase (Chat, Image, Video, Script, Tools...).
+/// Temporary placeholder body for screens not fully built out yet.
 ///
-/// This keeps the app fully compilable and navigable in Step 1 while
-/// the real feature UIs are built out step-by-step.
+/// As of Step 16, Pak AI's only remaining user of this is the Profile
+/// tab — Chat, History, and Settings are all fully implemented, and the
+/// old Image/Video/Script/Tools placeholder screens that used to share
+/// this widget have been removed along with those features.
 class ComingSoonPlaceholder extends StatelessWidget {
   final IconData icon;
   final String title;

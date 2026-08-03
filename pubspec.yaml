@@ -1,5 +1,5 @@
 name: ai_creator_hub
-description: "AI Creator Hub - AI-powered creator assistant app (chat, image, video, script, tools)."
+description: "Pak AI - a clean, modern AI chat assistant with selectable AI Modes, conversation history, and Gemini-powered chat."
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -10,12 +10,10 @@ dependencies:
   flutter:
     sdk: flutter
 
-  cupertino_icons: ^1.0.6
-
   # State management
   provider: ^6.1.2
 
-  # Networking (used for Gemini / image-gen API calls in Phase 2)
+  # Networking (Gemini chat API calls)
   http: ^1.2.1
 
   # Local persistence (theme mode, user prefs, cached data)
@@ -36,21 +34,11 @@ dependencies:
   # Attachment pipeline (Step 9): send picked files to Gemini.
   # Both are pure-Dart — no native/platform code, no manifest changes.
   mime: ^1.0.5            # detect attachment mime type from file name
-  image: ^4.2.0            # decode/resize/re-encode images before upload
+  image: ^4.2.0            # decode/resize/re-encode image attachments before upload
 
   # Chat UI actions (Step 10): Share and Read Aloud on AI responses.
   share_plus: ^10.1.3      # native share sheet for the "Share" action
   flutter_tts: ^4.2.0      # on-device text-to-speech for "Read Aloud"
-
-  # Image Generator "Download" (Step 15.5): saves bytes straight to the
-  # device's Photos/Pictures gallery — separate from Share (share_plus
-  # above), which just hands the file to the OS share sheet.
-  gal: ^2.3.2
-
-  # --- Added in later phases, not needed for Step 1 ---
-  # google_mobile_ads: ^5.1.0   # Phase 4 - requires AdMob App ID manifest setup first
-  # flutter_svg: ^2.0.10+1      # add when custom SVG assets are introduced
-  # path_provider: ^2.1.3       # Phase 3 - PDF Summarizer / Resume Builder
 
 dev_dependencies:
   flutter_test:
@@ -60,7 +48,7 @@ dev_dependencies:
 flutter:
   uses-material-design: true
 
-  # Uncomment and add real assets once app icon / splash are prepared (Phase 5)
+  # Uncomment and add real assets once app icon / splash are prepared.
   # assets:
   #   - assets/images/
   #   - assets/icons/
