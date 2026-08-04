@@ -44,6 +44,15 @@ jobs:
             android/app/src/main/AndroidManifest.xml
           grep -n 'android:label' android/app/src/main/AndroidManifest.xml
 
+      - name: Add microphone permission for voice input (Step 18.5)
+        # `flutter create` doesn't declare RECORD_AUDIO, so every fresh
+        # android/ needs it added before build — required for the mic
+        # button's speech_to_text session to work at runtime.
+        run: |
+          sed -i '/<manifest /a\    <uses-permission android:name="android.permission.RECORD_AUDIO" />' \
+            android/app/src/main/AndroidManifest.xml
+          grep -n 'RECORD_AUDIO' android/app/src/main/AndroidManifest.xml
+
       - name: Generate Pak AI launcher icon
         # Writes the adaptive icon (mipmap-anydpi-v26 + all mipmap-*dpi
         # foreground/background PNGs) into the android/ that flutter create

@@ -11,6 +11,7 @@ import '../core/services/attachment_processor_service.dart';
 import '../core/services/attachment_service.dart';
 import '../core/services/gemini_service.dart';
 import '../core/services/tts_voice_service.dart';
+import '../core/services/voice_input_service.dart';
 import '../core/theme/chat_palette.dart';
 import '../models/ai_mode.dart';
 import '../models/chat_attachment.dart';
@@ -22,6 +23,11 @@ import '../widgets/chat_bubble.dart';
 import '../widgets/conversation_drawer.dart';
 import '../widgets/typing_indicator.dart';
 import 'settings_screen.dart';
+
+/// Step 18.5: the mic button's three states — idle (normal mic icon),
+/// listening (animated equalizer, tap again to stop), and processing (a
+/// brief spinner while the final result settles before returning to idle).
+enum _MicState { idle, listening, processing }
 
 /// A picked-but-not-yet-sent attachment, waiting in the input bar.
 /// [previewMeta] is built immediately from the raw pick (for instant UI
@@ -96,6 +102,13 @@ class _ChatScreenState extends State<ChatScreen> {
   // client-side UI state, not persisted with the conversation, so every
   // chat starts fresh in General AI mode.
   AiMode _mode = AiMode.general;
+
+  // Voice input (Step 18.5): continuous speech recognition behind the mic
+  // button. `_voiceInput` is only initialized the first time the person
+  // taps the mic (see `_onVoiceTap`), so the OS permission prompt never
+  // fires just from opening the chat screen.
+  final VoiceInputService _voiceInput = VoiceInputService();
+  _MicState _micState = _MicState.idle;
 
   @override
   void initState() {
@@ -190,6 +203,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _inputController.dispose();
     _scrollController.dispose();
     _tts.stop();
+    _voiceInput.cancel();
     super.dispose();
   }
 
@@ -490,12 +504,89 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() => _mode = chosen);
   }
 
-  /// Placeholder for future speech-to-text input.
-  void _onVoiceTap() {
+  /// Toggles the mic button: idle → starts a continuous listening session,
+  /// listening → stops it. Recognized speech is streamed straight into
+  /// `_inputController` as it comes in (see `startListening`'s `onResult`)
+  /// so the person can review and edit it — sending is always a separate,
+  /// explicit tap on Send, never automatic.
+  Future<void> _onVoiceTap() async {
+    if (_micState == _MicState.listening) {
+      HapticFeedback.selectionClick();
+      await _voiceInput.stop();
+      if (!mounted) return;
+      setState(() => _micState = _MicState.processing);
+      // A short, deliberate beat while the engine settles on its final
+      // transcript — mirrors the quick "processing" blip ChatGPT shows
+      // between tapping stop and the mic returning to idle.
+      await Future.delayed(const Duration(milliseconds: 350));
+      if (!mounted) return;
+      setState(() => _micState = _MicState.idle);
+      return;
+    }
+
+    if (_micState == _MicState.processing) return;
+
+    HapticFeedback.selectionClick();
+    final status = await _voiceInput.ensureReady();
+    if (!mounted) return;
+
+    switch (status) {
+      case VoiceReadyStatus.permissionDenied:
+        _showVoiceSnack(
+          'Microphone access is required for voice input. '
+          'Please allow it in your device settings.',
+        );
+        return;
+      case VoiceReadyStatus.unavailable:
+        _showVoiceSnack('Speech recognition isn\'t available on this device.');
+        return;
+      case VoiceReadyStatus.ready:
+        break;
+    }
+
+    setState(() => _micState = _MicState.listening);
+
+    final started = await _voiceInput.startListening(
+      onResult: (text, isFinal) {
+        if (!mounted) return;
+        _inputController.text = text;
+        _inputController.selection =
+            TextSelection.collapsed(offset: text.length);
+      },
+      onDone: () {
+        if (!mounted || _micState != _MicState.listening) return;
+        setState(() => _micState = _MicState.idle);
+      },
+      onError: (message) {
+        if (!mounted) return;
+        setState(() => _micState = _MicState.idle);
+        _showVoiceSnack(message);
+      },
+    );
+
+    if (!started && mounted) {
+      setState(() => _micState = _MicState.idle);
+    }
+  }
+
+  /// A friendly, floating SnackBar for voice-input problems (permission
+  /// denied, no speech detected, no network, etc.) — never a crash, always
+  /// a clear next step.
+  void _showVoiceSnack(String message) {
+    ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Voice input coming soon.'),
-        duration: Duration(seconds: 2),
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.all(12),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        duration: const Duration(seconds: 3),
+        content: Row(
+          children: [
+            const Icon(Icons.mic_off_rounded, size: 20),
+            const SizedBox(width: 12),
+            Expanded(child: Text(message)),
+          ],
+        ),
       ),
     );
   }
@@ -696,6 +787,7 @@ class _ChatScreenState extends State<ChatScreen> {
               onSend: _sendMessage,
               onAttachment: _openAttachmentSheet,
               onVoice: _onVoiceTap,
+              micState: _micState,
             ),
           ],
         ),
@@ -1006,6 +1098,7 @@ class _ChatInputBar extends StatefulWidget {
   final VoidCallback onSend;
   final VoidCallback onAttachment;
   final VoidCallback onVoice;
+  final _MicState micState;
 
   const _ChatInputBar({
     required this.controller,
@@ -1013,6 +1106,7 @@ class _ChatInputBar extends StatefulWidget {
     required this.onSend,
     required this.onAttachment,
     required this.onVoice,
+    required this.micState,
   });
 
   @override
@@ -1145,22 +1239,61 @@ class _ChatInputBarState extends State<_ChatInputBar> {
               Padding(
                 padding: const EdgeInsets.only(bottom: 2),
                 child: Tooltip(
-                  message: 'Voice input',
-                  child: Material(
-                    color: Colors.transparent,
-                    shape: const CircleBorder(),
-                    child: InkWell(
-                      customBorder: const CircleBorder(),
-                      onTap: () {
-                        HapticFeedback.selectionClick();
-                        onVoice();
-                      },
-                      child: Padding(
-                        padding: const EdgeInsets.all(11),
-                        child: Icon(
-                          Icons.mic_none_rounded,
-                          size: 21,
-                          color: theme.colorScheme.onSurfaceVariant,
+                  message: switch (widget.micState) {
+                    _MicState.listening => 'Listening — tap to stop',
+                    _MicState.processing => 'Processing',
+                    _MicState.idle => 'Voice input',
+                  },
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    curve: Curves.easeOut,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: widget.micState == _MicState.listening
+                          ? theme.colorScheme.primary.withOpacity(0.14)
+                          : Colors.transparent,
+                    ),
+                    child: Material(
+                      color: Colors.transparent,
+                      shape: const CircleBorder(),
+                      child: InkWell(
+                        customBorder: const CircleBorder(),
+                        // Voice input is toggled on every tap regardless of
+                        // state — including mid-listen — so the button never
+                        // feels stuck; while processing, tapping again just
+                        // re-starts a fresh session once it settles.
+                        onTap: () {
+                          HapticFeedback.selectionClick();
+                          onVoice();
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.all(11),
+                          child: AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 200),
+                            transitionBuilder: (child, animation) =>
+                                FadeTransition(opacity: animation, child: child),
+                            child: switch (widget.micState) {
+                              _MicState.listening => _VoiceEqualizer(
+                                  key: const ValueKey('listening'),
+                                  color: theme.colorScheme.primary,
+                                ),
+                              _MicState.processing => SizedBox(
+                                  key: const ValueKey('processing'),
+                                  width: 21,
+                                  height: 21,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              _MicState.idle => Icon(
+                                  Icons.mic_none_rounded,
+                                  key: const ValueKey('idle'),
+                                  size: 21,
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                ),
+                            },
+                          ),
                         ),
                       ),
                     ),
@@ -1220,6 +1353,82 @@ class _ChatInputBarState extends State<_ChatInputBar> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// A small, three-bar animated equalizer shown in place of the mic icon
+/// while voice input is listening — a lightweight, dependency-free stand-in
+/// for a waveform, matching the "recording" affordance ChatGPT's mic button
+/// uses. Purely decorative: it has no bearing on recognition itself.
+class _VoiceEqualizer extends StatefulWidget {
+  final Color color;
+
+  const _VoiceEqualizer({super.key, required this.color});
+
+  @override
+  State<_VoiceEqualizer> createState() => _VoiceEqualizerState();
+}
+
+class _VoiceEqualizerState extends State<_VoiceEqualizer>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  // Each bar bounces on its own phase/speed so the three don't move in
+  // lockstep — reads as "live" rather than a mechanical loop.
+  static const List<double> _phases = [0.0, 0.35, 0.7];
+  static const List<double> _speeds = [1.0, 1.35, 0.85];
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1400),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 21,
+      height: 21,
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (context, _) {
+          return Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              for (var i = 0; i < 3; i++) ...[
+                if (i != 0) const SizedBox(width: 2.5),
+                _bar(i),
+              ],
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _bar(int index) {
+    final t = (_controller.value * _speeds[index] + _phases[index]) % 1.0;
+    // Smooth 0→1→0 pulse per cycle, offset per-bar via its own phase.
+    final pulse = (1 - (2 * t - 1).abs());
+    final height = 5.0 + pulse * 12.0;
+    return Container(
+      width: 3,
+      height: height,
+      decoration: BoxDecoration(
+        color: widget.color,
+        borderRadius: BorderRadius.circular(2),
       ),
     );
   }

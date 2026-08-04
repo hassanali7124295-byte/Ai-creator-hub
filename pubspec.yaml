@@ -40,6 +40,10 @@ dependencies:
   share_plus: ^10.1.3      # native share sheet for the "Share" action
   flutter_tts: ^4.2.0      # on-device text-to-speech for "Read Aloud"
 
+  # Step 18.5: mic-button voice input — continuous speech recognition,
+  # handles its own microphone permission prompt on first use.
+  speech_to_text: ^7.0.0
+
   # Step 17: Rate App (Play Store deep link) and outbound links from the
   # About / Privacy Policy screens.
   url_launcher: ^6.3.1
