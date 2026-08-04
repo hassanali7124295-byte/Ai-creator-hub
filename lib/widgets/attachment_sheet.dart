@@ -1,8 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:animate_do/animate_do.dart';
-
-import '../core/theme/chat_palette.dart';
 
 /// The kind of attachment source the user picked from [showAttachmentSheet].
 enum AttachmentType { gallery, camera, document, file }
@@ -11,121 +7,114 @@ class _AttachmentOption {
   final AttachmentType type;
   final IconData icon;
   final String label;
-  final String subtitle;
-  const _AttachmentOption(this.type, this.icon, this.label, this.subtitle);
+  const _AttachmentOption(this.type, this.icon, this.label);
 }
 
-// Step 18.2: reordered to the requested Camera / Gallery / Files / PDF
-// layout, now presented as large cards in a 2x2 grid instead of a plain
-// list.
+// Step 18.3: single row, ChatGPT (Android)-style ordering — Camera,
+// Gallery, Files, PDF.
 const List<_AttachmentOption> _options = [
   _AttachmentOption(
-      AttachmentType.camera, Icons.photo_camera_rounded, 'Camera', 'Take a photo'),
+      AttachmentType.camera, Icons.photo_camera_rounded, 'Camera'),
+  _AttachmentOption(AttachmentType.gallery, Icons.image_rounded, 'Gallery'),
+  _AttachmentOption(AttachmentType.file, Icons.folder_rounded, 'Files'),
   _AttachmentOption(
-      AttachmentType.gallery, Icons.photo_rounded, 'Gallery', 'Choose a photo'),
-  _AttachmentOption(
-      AttachmentType.file, Icons.folder_rounded, 'Files', 'Browse files'),
-  _AttachmentOption(
-      AttachmentType.document, Icons.picture_as_pdf_rounded, 'PDF', 'Pick a PDF'),
+      AttachmentType.document, Icons.picture_as_pdf_rounded, 'PDF'),
 ];
 
-/// Shows a premium bottom sheet letting the user choose an attachment
-/// source (Camera, Gallery, Files, PDF) as large rounded cards. Returns
-/// the chosen [AttachmentType], or `null` if the sheet was dismissed.
+/// Shows a clean, solid-white, ChatGPT(Android)-style bottom sheet with a
+/// single row of four large circular buttons — Camera, Gallery, Files, PDF.
+/// Returns the chosen [AttachmentType], or `null` if the sheet was
+/// dismissed without a selection.
 Future<AttachmentType?> showAttachmentSheet(BuildContext context) {
-  final theme = Theme.of(context);
-  // Icon accents always use the same Emerald palette as the chat screen
-  // itself, regardless of which context this sheet was opened from.
-  final accent = ChatPalette.colorSchemeFor(context);
-
   return showModalBottomSheet<AttachmentType>(
     context: context,
-    backgroundColor: Colors.transparent,
+    backgroundColor: Colors.white,
     isScrollControlled: true,
-    builder: (sheetContext) {
-      return _AttachmentSheetBody(theme: theme, accent: accent);
-    },
+    elevation: 16,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+    ),
+    builder: (sheetContext) => const _AttachmentSheetContent(),
   );
 }
 
-class _AttachmentSheetBody extends StatelessWidget {
-  final ThemeData theme;
-  final ColorScheme accent;
+/// The sheet body: a small drag handle followed by a single evenly-spaced
+/// row of [_AttachmentButton]s, wrapped in a fade + slide-up entrance.
+class _AttachmentSheetContent extends StatefulWidget {
+  const _AttachmentSheetContent();
 
-  const _AttachmentSheetBody({required this.theme, required this.accent});
+  @override
+  State<_AttachmentSheetContent> createState() =>
+      _AttachmentSheetContentState();
+}
+
+class _AttachmentSheetContentState extends State<_AttachmentSheetContent>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _fade;
+  late final Animation<Offset> _slide;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 340),
+    );
+    _fade = CurvedAnimation(parent: _controller, curve: Curves.easeOut);
+    _slide = Tween<Offset>(
+      begin: const Offset(0, 0.06),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic));
+    _controller.forward();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-      top: false,
-      child: Container(
-        margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(28),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(
-                  theme.brightness == Brightness.dark ? 0.4 : 0.12),
-              blurRadius: 30,
-              offset: const Offset(0, -6),
-            ),
-          ],
-        ),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 14, 20, 8),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Center(
-                child: Container(
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.onSurfaceVariant.withOpacity(0.3),
-                    borderRadius: BorderRadius.circular(2),
+    return FadeTransition(
+      opacity: _fade,
+      child: SlideTransition(
+        position: _slide,
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 14, 24, 28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Small drag handle.
+                Center(
+                  child: Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE2E2E2),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(height: 20),
-              Text(
-                'Add attachment',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Choose a source to attach to your message',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 20),
-              GridView.count(
-                crossAxisCount: 2,
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                mainAxisSpacing: 14,
-                crossAxisSpacing: 14,
-                childAspectRatio: 1.15,
-                children: [
-                  for (var i = 0; i < _options.length; i++)
-                    FadeInUp(
-                      duration: const Duration(milliseconds: 280),
-                      delay: Duration(milliseconds: i * 45),
-                      from: 16,
-                      child: _AttachmentCard(
+                const SizedBox(height: 28),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    for (var i = 0; i < _options.length; i++)
+                      _AttachmentButton(
                         option: _options[i],
-                        accent: accent,
-                        theme: theme,
+                        controller: _controller,
+                        index: i,
+                        onTap: () =>
+                            Navigator.of(context).pop(_options[i].type),
                       ),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 8),
-            ],
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -133,87 +122,92 @@ class _AttachmentSheetBody extends StatelessWidget {
   }
 }
 
-/// A single large, rounded, tappable card for one attachment source.
-class _AttachmentCard extends StatefulWidget {
+/// One circular attachment button: a large light-gray circle holding the
+/// icon, with its label underneath — no card, no border, no outline. Pops
+/// in with a slight staggered scale + fade, and gives a soft circular
+/// ripple plus a small press-scale on tap.
+class _AttachmentButton extends StatefulWidget {
   final _AttachmentOption option;
-  final ColorScheme accent;
-  final ThemeData theme;
+  final AnimationController controller;
+  final int index;
+  final VoidCallback onTap;
 
-  const _AttachmentCard({
+  const _AttachmentButton({
     required this.option,
-    required this.accent,
-    required this.theme,
+    required this.controller,
+    required this.index,
+    required this.onTap,
   });
 
   @override
-  State<_AttachmentCard> createState() => _AttachmentCardState();
+  State<_AttachmentButton> createState() => _AttachmentButtonState();
 }
 
-class _AttachmentCardState extends State<_AttachmentCard> {
+class _AttachmentButtonState extends State<_AttachmentButton> {
   bool _pressed = false;
 
-  void _setPressed(bool value) {
-    if (_pressed != value) setState(() => _pressed = value);
-  }
+  void _setPressed(bool value) => setState(() => _pressed = value);
+
+  static const double _circleSize = 68;
 
   @override
   Widget build(BuildContext context) {
-    final theme = widget.theme;
-    final accent = widget.accent;
-    final option = widget.option;
+    final start = (widget.index * 0.08).clamp(0.0, 0.6);
+    final end = (start + 0.45).clamp(0.0, 1.0);
+    final entrance = CurvedAnimation(
+      parent: widget.controller,
+      curve: Interval(start, end, curve: Curves.easeOutBack),
+    );
 
-    return AnimatedScale(
-      scale: _pressed ? 0.96 : 1.0,
-      duration: const Duration(milliseconds: 120),
-      curve: Curves.easeOut,
-      child: Material(
-        color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.5),
-        borderRadius: BorderRadius.circular(22),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(22),
-          onTapDown: (_) => _setPressed(true),
-          onTapCancel: () => _setPressed(false),
-          onTapUp: (_) => _setPressed(false),
-          onTap: () {
-            HapticFeedback.selectionClick();
-            Navigator.of(context).pop(option.type);
-          },
-          child: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(22),
-              border: Border.all(
-                color: theme.colorScheme.outlineVariant.withOpacity(0.25),
+    return AnimatedBuilder(
+      animation: entrance,
+      builder: (context, child) => Opacity(
+        opacity: entrance.value.clamp(0.0, 1.0),
+        child: Transform.scale(
+          scale: entrance.value.clamp(0.0, 1.0),
+          child: child,
+        ),
+      ),
+      child: GestureDetector(
+        onTapDown: (_) => _setPressed(true),
+        onTapCancel: () => _setPressed(false),
+        onTapUp: (_) => _setPressed(false),
+        child: AnimatedScale(
+          scale: _pressed ? 0.94 : 1.0,
+          duration: const Duration(milliseconds: 110),
+          curve: Curves.easeOut,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Material(
+                color: const Color(0xFFF2F2F3),
+                shape: const CircleBorder(),
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  splashColor: Colors.black.withOpacity(0.06),
+                  highlightColor: Colors.black.withOpacity(0.04),
+                  onTap: widget.onTap,
+                  child: SizedBox(
+                    width: _circleSize,
+                    height: _circleSize,
+                    child: Icon(
+                      widget.option.icon,
+                      size: 28,
+                      color: const Color(0xFF1A1A1A),
+                    ),
+                  ),
+                ),
               ),
-            ),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: accent.primary.withOpacity(0.13),
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(option.icon, color: accent.primary, size: 26),
+              const SizedBox(height: 10),
+              Text(
+                widget.option.label,
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  color: Color(0xFF1A1A1A),
                 ),
-                const SizedBox(height: 12),
-                Text(
-                  option.label,
-                  style: theme.textTheme.bodyLarge?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  option.subtitle,
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),

@@ -31,8 +31,7 @@ class ChatBubble extends StatefulWidget {
   /// Starts or stops text-to-speech playback of this message.
   final VoidCallback? onReadAloud;
 
-  /// Removes this message from the conversation. Surfaced only inside the
-  /// "More" menu (Step 18.2).
+  /// Deletes this message from the conversation.
   final VoidCallback? onDelete;
 
   /// Whether this specific message is the one currently being read aloud.
@@ -65,10 +64,14 @@ class ChatBubble extends StatefulWidget {
   State<ChatBubble> createState() => _ChatBubbleState();
 }
 
-enum _Feedback { none, liked, disliked }
+enum _Feedback { none, liked }
 
-/// Actions available inside the "More" popup menu (Step 18.2).
-enum _MoreAction { share, regenerate, like, dislike, delete }
+/// Step 18.2: the AI action row now has two densities — [full] shows every
+/// action (Copy, Share, Regenerate, Speak, Like, Delete), [compact] shows
+/// just Copy, Speak, and a "More" overflow button that reveals the rest in
+/// a bottom sheet, matching the ChatGPT/Claude pattern of collapsing the
+/// row down to essentials once the person has engaged with a reply.
+enum _ActionDensity { full, compact }
 
 class _ChatBubbleState extends State<ChatBubble> {
   // Local-only UI feedback (not persisted) — a lightweight way to let
@@ -80,14 +83,11 @@ class _ChatBubbleState extends State<ChatBubble> {
   int _visibleChars = 0;
   bool _streaming = false;
 
-  // Step 12.4: the action row (copy/share/regenerate/etc.) is now hidden
-  // by default and only shown once the person taps or long-presses the
-  // AI reply — instead of appearing automatically once streaming ends.
-  bool _actionsVisible = false;
-
-  // Step 18.2: anchor for the "More" popup menu so it opens right below
-  // the "..." button instead of at a fixed screen position.
-  final GlobalKey _moreButtonKey = GlobalKey();
+  // Step 18.2: the action row now appears in full as soon as a reply is
+  // done streaming (no tap required), and collapses to Copy/Speak/More
+  // the first time the person taps the reply — tapping again toggles
+  // back, same as before.
+  _ActionDensity _density = _ActionDensity.full;
 
   bool get _isAiReply => !widget.message.isUser && !widget.message.isError;
 
@@ -105,14 +105,18 @@ class _ChatBubbleState extends State<ChatBubble> {
     // hide any actions left showing from the previous message.
     if (!identical(oldWidget.message, widget.message)) {
       _streamTimer?.cancel();
-      _actionsVisible = false;
+      _density = _ActionDensity.full;
       _startOrSkipStreaming();
     }
   }
 
   void _toggleActions() {
     HapticFeedback.selectionClick();
-    setState(() => _actionsVisible = !_actionsVisible);
+    setState(() {
+      _density = _density == _ActionDensity.full
+          ? _ActionDensity.compact
+          : _ActionDensity.full;
+    });
   }
 
   void _startOrSkipStreaming() {
@@ -152,156 +156,29 @@ class _ChatBubbleState extends State<ChatBubble> {
     setState(() {
       _feedback = _feedback == _Feedback.liked ? _Feedback.none : _Feedback.liked;
     });
-    _showFeedbackSnack();
-  }
-
-  void _toggleDislike() {
-    setState(() {
-      _feedback =
-          _feedback == _Feedback.disliked ? _Feedback.none : _Feedback.disliked;
-    });
-    _showFeedbackSnack();
-  }
-
-  void _showFeedbackSnack() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Thanks for the feedback!'),
-        duration: Duration(seconds: 1),
-      ),
-    );
-  }
-
-  // Step 18.2: the secondary actions (Share, Regenerate, Like, Dislike,
-  // Delete) now live behind a single "More" button instead of being shown
-  // inline, ChatGPT-style. Opens as a rounded popup menu anchored to the
-  // "..." button.
-  Future<void> _showMoreMenu() async {
-    HapticFeedback.selectionClick();
-    final theme = Theme.of(context);
-    final renderBox =
-        _moreButtonKey.currentContext?.findRenderObject() as RenderBox?;
-    final overlay =
-        Overlay.of(context).context.findRenderObject() as RenderBox?;
-    if (renderBox == null || overlay == null) return;
-
-    final buttonTopLeft =
-        renderBox.localToGlobal(Offset.zero, ancestor: overlay);
-    final position = RelativeRect.fromLTRB(
-      buttonTopLeft.dx,
-      buttonTopLeft.dy + renderBox.size.height + 6,
-      overlay.size.width - (buttonTopLeft.dx + renderBox.size.width),
-      0,
-    );
-
-    final selection = await showMenu<_MoreAction>(
-      context: context,
-      position: position,
-      color: theme.colorScheme.surfaceContainerHigh,
-      elevation: 8,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-      ),
-      constraints: const BoxConstraints(minWidth: 200),
-      items: [
-        _menuItem(
-          theme,
-          action: _MoreAction.share,
-          icon: Icons.ios_share_outlined,
-          label: 'Share',
-          enabled: widget.onShare != null,
+    if (_feedback == _Feedback.liked) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Thanks for the feedback!'),
+          duration: Duration(seconds: 1),
         ),
-        _menuItem(
-          theme,
-          action: _MoreAction.regenerate,
-          icon: Icons.refresh_outlined,
-          label: 'Regenerate',
-          enabled: widget.onRegenerate != null,
-        ),
-        _menuItem(
-          theme,
-          action: _MoreAction.like,
-          icon: _feedback == _Feedback.liked
-              ? Icons.thumb_up_rounded
-              : Icons.thumb_up_outlined,
-          label: 'Like',
-          active: _feedback == _Feedback.liked,
-        ),
-        _menuItem(
-          theme,
-          action: _MoreAction.dislike,
-          icon: _feedback == _Feedback.disliked
-              ? Icons.thumb_down_rounded
-              : Icons.thumb_down_outlined,
-          label: 'Dislike',
-          active: _feedback == _Feedback.disliked,
-        ),
-        const PopupMenuDivider(height: 8),
-        _menuItem(
-          theme,
-          action: _MoreAction.delete,
-          icon: Icons.delete_outline_rounded,
-          label: 'Delete',
-          enabled: widget.onDelete != null,
-          destructive: true,
-        ),
-      ],
-    );
-
-    if (!mounted || selection == null) return;
-    switch (selection) {
-      case _MoreAction.share:
-        widget.onShare?.call();
-        break;
-      case _MoreAction.regenerate:
-        widget.onRegenerate?.call();
-        break;
-      case _MoreAction.like:
-        _toggleLike();
-        break;
-      case _MoreAction.dislike:
-        _toggleDislike();
-        break;
-      case _MoreAction.delete:
-        widget.onDelete?.call();
-        break;
+      );
     }
   }
 
-  PopupMenuItem<_MoreAction> _menuItem(
-    ThemeData theme, {
-    required _MoreAction action,
-    required IconData icon,
-    required String label,
-    bool enabled = true,
-    bool active = false,
-    bool destructive = false,
-  }) {
-    final color = !enabled
-        ? theme.colorScheme.onSurfaceVariant.withOpacity(0.35)
-        : destructive
-            ? theme.colorScheme.error
-            : active
-                ? theme.colorScheme.primary
-                : theme.colorScheme.onSurfaceVariant;
-
-    return PopupMenuItem<_MoreAction>(
-      value: action,
-      enabled: enabled,
-      height: 44,
-      child: Row(
-        children: [
-          Icon(icon, size: 19, color: color),
-          const SizedBox(width: 12),
-          Text(
-            label,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: color,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ],
-      ),
+  /// Opens the "More" bottom sheet with the overflow actions (Share,
+  /// Regenerate, Like, Delete) — used when the row is in its compact
+  /// density. Disabled actions (e.g. Regenerate on an older reply) render
+  /// dimmed and inert, same as their inline counterparts did before.
+  void _openMoreMenu() {
+    HapticFeedback.selectionClick();
+    _showMoreMenu(
+      context: context,
+      onShare: widget.onShare,
+      onRegenerate: widget.onRegenerate,
+      onLike: _toggleLike,
+      liked: _feedback == _Feedback.liked,
+      onDelete: widget.onDelete,
     );
   }
 
@@ -339,7 +216,10 @@ class _ChatBubbleState extends State<ChatBubble> {
     // Step 12.4: actions are hidden by default and only appear once the
     // person explicitly taps or long-presses the reply (see
     // `_toggleActions`) — no more auto-reveal once streaming finishes.
-    final showActions = isAiReply && !_streaming && _actionsVisible;
+    // Step 18.2: the row is visible for any settled AI reply — full
+    // density as soon as streaming finishes, no tap required — and only
+    // its density (full vs. compact) is toggled by tapping the reply.
+    final showActions = isAiReply && !_streaming;
 
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
@@ -533,46 +413,285 @@ class _ChatBubbleState extends State<ChatBubble> {
                     duration: const Duration(milliseconds: 180),
                     opacity: showActions ? 1 : 0,
                     child: Padding(
-              padding: const EdgeInsets.only(top: 2, left: 2),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 1, vertical: 1),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.surfaceContainerHigh.withOpacity(0.5),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Wrap(
-                  spacing: 2,
-                  children: [
-                    // Step 18.2: the row is trimmed down to the three
-                    // primary actions — Copy, Speak, More — ChatGPT-style.
-                    // Share/Regenerate/Like/Dislike/Delete now live inside
-                    // the "More" popup menu.
-                    _ActionIcon(
-                      icon: Icons.copy_outlined,
-                      tooltip: 'Copy',
-                      onTap: widget.onCopy,
-                    ),
-                    _ActionIcon(
-                      icon: widget.isSpeaking
-                          ? Icons.stop_circle_rounded
-                          : Icons.volume_up_outlined,
-                      tooltip: widget.isSpeaking ? 'Stop' : 'Speak',
-                      onTap: widget.onReadAloud,
-                      active: widget.isSpeaking,
-                    ),
-                    _ActionIcon(
-                      key: _moreButtonKey,
-                      icon: Icons.more_horiz_rounded,
-                      tooltip: 'More',
-                      onTap: _showMoreMenu,
-                    ),
-                  ],
-                ),
-              ),
+                      padding: const EdgeInsets.only(top: 6, left: 2),
+                      child: _ActionRow(
+                        density: _density,
+                        onCopy: widget.onCopy,
+                        onShare: widget.onShare,
+                        onRegenerate: widget.onRegenerate,
+                        onReadAloud: widget.onReadAloud,
+                        onDelete: widget.onDelete,
+                        onMore: _openMoreMenu,
+                        isSpeaking: widget.isSpeaking,
+                        liked: _feedback == _Feedback.liked,
+                        onToggleLike: _toggleLike,
+                      ),
                     ),
                   ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Shows the ChatGPT/Claude-style overflow sheet with the actions that
+/// don't fit in the compact row: Share, Regenerate, Like, Delete. Each row
+/// renders dimmed and inert when its callback is `null` (e.g. Regenerate
+/// on anything but the latest reply).
+Future<void> _showMoreMenu({
+  required BuildContext context,
+  required VoidCallback? onShare,
+  required VoidCallback? onRegenerate,
+  required VoidCallback onLike,
+  required bool liked,
+  required VoidCallback? onDelete,
+}) {
+  final theme = Theme.of(context);
+  return showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: theme.colorScheme.surfaceContainerHigh,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+    ),
+    builder: (sheetContext) {
+      return SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.onSurfaceVariant.withOpacity(0.3),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              _MoreMenuTile(
+                icon: Icons.ios_share_outlined,
+                label: 'Share',
+                onTap: onShare == null
+                    ? null
+                    : () {
+                        Navigator.of(sheetContext).pop();
+                        onShare();
+                      },
+              ),
+              _MoreMenuTile(
+                icon: Icons.refresh_rounded,
+                label: 'Regenerate',
+                onTap: onRegenerate == null
+                    ? null
+                    : () {
+                        Navigator.of(sheetContext).pop();
+                        onRegenerate();
+                      },
+              ),
+              _MoreMenuTile(
+                icon: liked ? Icons.thumb_up_rounded : Icons.thumb_up_outlined,
+                label: liked ? 'Liked' : 'Like',
+                active: liked,
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  onLike();
+                },
+              ),
+              _MoreMenuTile(
+                icon: Icons.delete_outline_rounded,
+                label: 'Delete',
+                destructive: true,
+                onTap: onDelete == null
+                    ? null
+                    : () {
+                        Navigator.of(sheetContext).pop();
+                        onDelete();
+                      },
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
+}
+
+/// A single row in the "More" overflow sheet — icon, label, and a subtle
+/// pressed state, styled to match [showAttachmentSheet] for a consistent,
+/// premium feel across the app's bottom sheets.
+class _MoreMenuTile extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+  final bool active;
+  final bool destructive;
+
+  const _MoreMenuTile({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.active = false,
+    this.destructive = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final disabled = onTap == null;
+    final color = disabled
+        ? theme.colorScheme.onSurfaceVariant.withOpacity(0.35)
+        : destructive
+            ? theme.colorScheme.error
+            : active
+                ? theme.colorScheme.primary
+                : theme.colorScheme.onSurface;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap == null
+            ? null
+            : () {
+                HapticFeedback.selectionClick();
+                onTap!();
+              },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 13),
+          child: Row(
+            children: [
+              Icon(icon, size: 20, color: color),
+              const SizedBox(width: 16),
+              Text(
+                label,
+                style: theme.textTheme.bodyLarge?.copyWith(
+                  color: color,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The pill-shaped action row beneath an AI reply. Renders either the
+/// [_ActionDensity.full] set (Copy, Share, Regenerate, Speak, Like,
+/// Delete) or the [_ActionDensity.compact] set (Copy, Speak, More) with a
+/// cross-fade between the two, matching the premium, minimal icon-row
+/// pattern used by ChatGPT and Claude.
+class _ActionRow extends StatelessWidget {
+  final _ActionDensity density;
+  final VoidCallback? onCopy;
+  final VoidCallback? onShare;
+  final VoidCallback? onRegenerate;
+  final VoidCallback? onReadAloud;
+  final VoidCallback? onDelete;
+  final VoidCallback onMore;
+  final bool isSpeaking;
+  final bool liked;
+  final VoidCallback onToggleLike;
+
+  const _ActionRow({
+    required this.density,
+    required this.onCopy,
+    required this.onShare,
+    required this.onRegenerate,
+    required this.onReadAloud,
+    required this.onDelete,
+    required this.onMore,
+    required this.isSpeaking,
+    required this.liked,
+    required this.onToggleLike,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    final speakIcon = _ActionIcon(
+      icon: isSpeaking ? Icons.stop_circle_rounded : Icons.volume_up_outlined,
+      tooltip: isSpeaking ? 'Stop' : 'Speak',
+      onTap: onReadAloud,
+      active: isSpeaking,
+    );
+    final copyIcon = _ActionIcon(
+      icon: Icons.copy_outlined,
+      tooltip: 'Copy',
+      onTap: onCopy,
+    );
+
+    final children = density == _ActionDensity.full
+        ? [
+            copyIcon,
+            _ActionIcon(
+              icon: Icons.ios_share_outlined,
+              tooltip: 'Share',
+              onTap: onShare,
+            ),
+            _ActionIcon(
+              icon: Icons.refresh_outlined,
+              tooltip: 'Regenerate',
+              onTap: onRegenerate,
+            ),
+            speakIcon,
+            _ActionIcon(
+              icon: liked ? Icons.thumb_up_rounded : Icons.thumb_up_outlined,
+              tooltip: 'Like',
+              onTap: onToggleLike,
+              active: liked,
+            ),
+            _ActionIcon(
+              icon: Icons.delete_outline_rounded,
+              tooltip: 'Delete',
+              onTap: onDelete,
+              destructive: true,
+            ),
+          ]
+        : [
+            copyIcon,
+            speakIcon,
+            _ActionIcon(
+              icon: Icons.more_horiz_rounded,
+              tooltip: 'More',
+              onTap: onMore,
+            ),
+          ];
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 3),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHigh.withOpacity(0.6),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: theme.colorScheme.outlineVariant.withOpacity(0.25),
+          width: 1,
+        ),
+      ),
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 160),
+        switchInCurve: Curves.easeOut,
+        switchOutCurve: Curves.easeIn,
+        transitionBuilder: (child, animation) => FadeTransition(
+          opacity: animation,
+          child: SizeTransition(
+            sizeFactor: animation,
+            axis: Axis.horizontal,
+            child: child,
+          ),
+        ),
+        child: Row(
+          key: ValueKey(density),
+          mainAxisSize: MainAxisSize.min,
+          children: children,
+        ),
       ),
     );
   }
@@ -586,13 +705,14 @@ class _ActionIcon extends StatefulWidget {
   final String tooltip;
   final VoidCallback? onTap;
   final bool active;
+  final bool destructive;
 
   const _ActionIcon({
-    super.key,
     required this.icon,
     required this.tooltip,
     required this.onTap,
     this.active = false,
+    this.destructive = false,
   });
 
   @override
@@ -613,9 +733,11 @@ class _ActionIconState extends State<_ActionIcon> {
     final onTap = widget.onTap;
     final color = onTap == null
         ? theme.colorScheme.onSurfaceVariant.withOpacity(0.35)
-        : widget.active
-            ? theme.colorScheme.primary
-            : theme.colorScheme.onSurfaceVariant;
+        : widget.destructive
+            ? theme.colorScheme.error
+            : widget.active
+                ? theme.colorScheme.primary
+                : theme.colorScheme.onSurfaceVariant;
 
     return Tooltip(
       message: widget.tooltip,

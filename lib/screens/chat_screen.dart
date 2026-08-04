@@ -313,19 +313,6 @@ class _ChatScreenState extends State<ChatScreen> {
     Share.share(text);
   }
 
-  /// Removes the message at [index] from the conversation and persists
-  /// the change. Wired up to the "Delete" entry in the AI reply's More
-  /// menu (Step 18.2).
-  Future<void> _deleteMessage(int index) async {
-    if (index < 0 || index >= _messages.length) return;
-    if (_speakingIndex == index) {
-      await _tts.stop();
-      _speakingIndex = null;
-    }
-    setState(() => _messages.removeAt(index));
-    unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
-  }
-
   /// Starts reading [text] aloud, or stops if [index] is already speaking.
   /// Only one message plays at a time — starting a new one cancels any
   /// reply currently being read.
@@ -395,6 +382,23 @@ class _ChatScreenState extends State<ChatScreen> {
       _scrollToBottom();
       unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
     }
+  }
+
+  /// Removes a single message (used by the AI reply's "Delete" action, in
+  /// the ChatBubble overflow menu) and persists the change.
+  Future<void> _deleteMessage(int index) async {
+    if (index < 0 || index >= _messages.length) return;
+    if (_speakingIndex == index) {
+      await _tts.stop();
+      _speakingIndex = null;
+    }
+    setState(() {
+      _messages.removeAt(index);
+      if (_speakingIndex != null && _speakingIndex! > index) {
+        _speakingIndex = _speakingIndex! - 1;
+      }
+    });
+    unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
   }
 
   Future<void> _clearChat() async {
