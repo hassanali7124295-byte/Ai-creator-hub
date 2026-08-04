@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 
 import '../core/theme/chat_palette.dart';
 
-/// A single soft, pulsing emerald dot shown inside a bubble while the AI
-/// is "typing" (Step 12.4) — replaces the previous three-dot fade with
-/// one dot that gently grows/shrinks while its opacity breathes in and
-/// out. No bounce, no spring — just a slow, smooth ease.
+/// Three small, pulsing emerald dots shown while the AI is "typing" —
+/// ChatGPT-style: no bubble, no card, no background behind the dots, just
+/// the dots directly on the chat background, left-aligned like an incoming
+/// message. Each dot uses the exact same size, color, and ease-in-out pulse
+/// curve as before; a single 900ms controller drives all three, staggered
+/// so they pulse in sequence instead of together.
 class TypingIndicator extends StatefulWidget {
   const TypingIndicator({super.key});
 
@@ -32,53 +34,44 @@ class _TypingIndicatorState extends State<TypingIndicator>
     super.dispose();
   }
 
+  Widget _buildDot(double phaseOffset) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final double t = (_controller.value + phaseOffset) % 1.0;
+        final double eased = Curves.easeInOutSine.transform(t);
+        final double scale = 0.75 + (eased * 0.5); // 0.75 -> 1.25
+        final double opacity = 0.35 + (eased * 0.65); // 0.35 -> 1.0
+        return Transform.scale(
+          scale: scale,
+          child: Container(
+            width: 9,
+            height: 9,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: ChatPalette.userBubble.withOpacity(opacity),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-
     return Align(
       alignment: Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 6),
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surfaceContainerHigh,
-          borderRadius: const BorderRadius.only(
-            topLeft: Radius.circular(18),
-            topRight: Radius.circular(18),
-            bottomRight: Radius.circular(18),
-            bottomLeft: Radius.circular(4),
-          ),
-          boxShadow: isDark
-              ? null
-              : [
-                  BoxShadow(
-                    color: theme.colorScheme.shadow.withOpacity(0.05),
-                    blurRadius: 10,
-                    offset: const Offset(0, 3),
-                  ),
-                ],
-        ),
-        child: AnimatedBuilder(
-          animation: _controller,
-          builder: (context, _) {
-            final double eased =
-                Curves.easeInOutSine.transform(_controller.value);
-            final double scale = 0.75 + (eased * 0.5); // 0.75 -> 1.25
-            final double opacity = 0.35 + (eased * 0.65); // 0.35 -> 1.0
-            return Transform.scale(
-              scale: scale,
-              child: Container(
-                width: 9,
-                height: 9,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: ChatPalette.userBubble.withOpacity(opacity),
-                ),
-              ),
-            );
-          },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _buildDot(0.0),
+            const SizedBox(width: 6),
+            _buildDot(0.15),
+            const SizedBox(width: 6),
+            _buildDot(0.3),
+          ],
         ),
       ),
     );
