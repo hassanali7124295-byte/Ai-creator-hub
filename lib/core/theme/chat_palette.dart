@@ -37,6 +37,15 @@ class ChatPalette {
       brightness: base.brightness,
     ).copyWith(secondary: graphite);
 
+    // Step 18.7: `base` (app_theme.dart's light/dark ThemeData) already has
+    // its component themes — card, chip, input fields, dialogs, popup
+    // menus, snackbars, dividers, etc. — pre-computed from the app-wide
+    // (violet) colorScheme. A plain `base.copyWith(colorScheme: scheme)`
+    // swaps the scheme but leaves those nested themes pointing at the old
+    // colors, which is exactly what made Dark Mode look inconsistent here
+    // (e.g. cards/inputs not matching the emerald surfaces). Rebuilding
+    // each one from `scheme` keeps this whole subtree visually consistent
+    // in both light and dark mode.
     return base.copyWith(
       colorScheme: scheme,
       scaffoldBackgroundColor: scheme.surface,
@@ -46,6 +55,70 @@ class ChatPalette {
         titleTextStyle: base.appBarTheme.titleTextStyle?.copyWith(
           color: scheme.onSurface,
         ),
+      ),
+      cardTheme: base.cardTheme.copyWith(
+        color: scheme.surfaceContainerHigh,
+      ),
+      chipTheme: base.chipTheme.copyWith(
+        backgroundColor: scheme.surfaceContainerHigh,
+      ),
+      inputDecorationTheme: base.inputDecorationTheme.copyWith(
+        fillColor: scheme.surfaceContainerHigh,
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+          borderSide: BorderSide(color: scheme.primary, width: 1.5),
+        ),
+      ),
+      elevatedButtonTheme: ElevatedButtonThemeData(
+        style: base.elevatedButtonTheme.style?.copyWith(
+          backgroundColor: WidgetStatePropertyAll(scheme.primary),
+          foregroundColor: WidgetStatePropertyAll(scheme.onPrimary),
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: base.outlinedButtonTheme.style?.copyWith(
+          foregroundColor: WidgetStatePropertyAll(scheme.primary),
+          side: WidgetStatePropertyAll(
+            BorderSide(color: scheme.outlineVariant),
+          ),
+        ),
+      ),
+      dialogTheme: base.dialogTheme.copyWith(
+        backgroundColor: scheme.surfaceContainerHigh,
+        titleTextStyle: base.dialogTheme.titleTextStyle?.copyWith(
+          color: scheme.onSurface,
+        ),
+        contentTextStyle: base.dialogTheme.contentTextStyle?.copyWith(
+          color: scheme.onSurfaceVariant,
+        ),
+      ),
+      bottomSheetTheme: base.bottomSheetTheme.copyWith(
+        backgroundColor: scheme.surfaceContainerHigh,
+        modalBackgroundColor: scheme.surfaceContainerHigh,
+      ),
+      popupMenuTheme: base.popupMenuTheme.copyWith(
+        color: scheme.surfaceContainerHigh,
+        textStyle: base.popupMenuTheme.textStyle?.copyWith(
+          color: scheme.onSurface,
+        ),
+      ),
+      snackBarTheme: base.snackBarTheme.copyWith(
+        backgroundColor: scheme.inverseSurface,
+        contentTextStyle: base.snackBarTheme.contentTextStyle?.copyWith(
+          color: scheme.onInverseSurface,
+        ),
+        actionTextColor: scheme.inversePrimary,
+      ),
+      dividerTheme: base.dividerTheme.copyWith(
+        color: scheme.outlineVariant,
+      ),
+      listTileTheme: base.listTileTheme.copyWith(
+        iconColor: scheme.onSurfaceVariant,
+        textColor: scheme.onSurface,
+      ),
+      drawerTheme: base.drawerTheme.copyWith(
+        backgroundColor: scheme.surface,
+        scrimColor: scheme.scrim.withOpacity(0.4),
       ),
       textSelectionTheme: TextSelectionThemeData(
         cursorColor: scheme.primary,
