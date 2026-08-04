@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
 /// Step 19 — professional, auto-language Text-to-Speech.
@@ -85,6 +86,12 @@ class TtsVoiceService {
     await _tryAsync(() => tts.speak(text));
   }
 
+  /// The voice selected for each language, memoized so the exact same
+  /// voice is reused on every call — selection never changes randomly
+  /// between taps of the Speak button, only if the underlying voice list
+  /// itself changes (e.g. a fresh cache after a cold start).
+  static final Map<bool, Map<String, String>?> _selectedVoice = {};
+
   /// True when enough of [text] is Arabic-script (Urdu) characters that
   /// it should be read as Urdu rather than English. A small threshold
   /// avoids one stray character (e.g. a quoted Urdu word in an otherwise
@@ -111,6 +118,7 @@ class TtsVoiceService {
   /// don't keep hammering an engine that doesn't support enumeration.
   static Future<void> _cacheVoices(FlutterTts tts) async {
     _voiceCacheAttempted = true;
+    _selectedVoice.clear();
     List<dynamic>? raw0;
     try {
       final raw = await tts.getVoices;
@@ -139,50 +147,116 @@ class TtsVoiceService {
         .toList();
   }
 
-  /// Picks the best cached voice for the requested language: an explicit
-  /// male match first, then a higher-quality "network" voice, then just
-  /// the first voice for that language. Returns null (leave the engine's
-  /// own default for the locale we just set) if no voices are cached or
-  /// none match the language.
+  /// Picks the best cached voice for the requested language and remembers
+  /// it (see [_selectedVoice]) so repeated calls always return the exact
+  /// same voice instead of recomputing — and logs the pick once, so which
+  /// voice is in use is always visible in the debug console.
+  ///
+  /// The reply's detected language (Urdu vs English) is always respected
+  /// first — picking a Urdu-locale voice to read an English reply (or vice
+  /// versa) would mispronounce it, regardless of the voice's gender. Within
+  /// that language, priority matches the product requirement:
+  ///   1. ur-PK male (when the reply is Urdu)
+  ///   2. en-US male (when the reply is English)
+  ///   3. en-GB male (when the reply is English and no en-US male exists)
+  ///   4. Highest-quality male voice available, any locale (when the
+  ///      requested language has no male voice of its own)
+  ///   5. If no male voice exists at all: best available voice for the
+  ///      requested language — but NEVER a voice hardcoded/flagged female
+  ///      when a non-female alternative exists.
   static Map<String, String>? _bestVoice({required bool isUrdu}) {
-    final voices = _voiceCache;
-    if (voices == null || voices.isEmpty) return null;
+    if (_selectedVoice.containsKey(isUrdu)) {
+      return _selectedVoice[isUrdu];
+    }
 
-    final prefix = isUrdu ? 'ur' : 'en';
-    final matching =
-        voices.where((v) => v['locale']!.toLowerCase().startsWith(prefix)).toList();
-    if (matching.isEmpty) return null;
+    final voices = _voiceCache;
+    if (voices == null || voices.isEmpty) {
+      _selectedVoice[isUrdu] = null;
+      return null;
+    }
 
     bool matchesAny(String haystack, List<String> hints) =>
         hints.any((hint) => haystack.contains(hint));
-
-    // 1. Explicit male match (and not also flagged female).
-    for (final v in matching) {
+    bool isMale(Map<String, String> v) {
       final key = v['name']!.toLowerCase();
-      if (matchesAny(key, _maleHints) && !matchesAny(key, _femaleHints)) {
-        return v;
+      return matchesAny(key, _maleHints) && !matchesAny(key, _femaleHints);
+    }
+
+    Map<String, String>? firstMaleWithLocale(String localePrefix) {
+      for (final v in voices) {
+        if (v['locale']!.toLowerCase().startsWith(localePrefix) && isMale(v)) {
+          return v;
+        }
+      }
+      return null;
+    }
+
+    // Requested-language voices only — never cross into the other
+    // language's locale, so pronunciation always matches the text.
+    final prefix = isUrdu ? 'ur' : 'en';
+    final matching =
+        voices.where((v) => v['locale']!.toLowerCase().startsWith(prefix)).toList();
+
+    Map<String, String>? chosen;
+    String reason;
+
+    if (isUrdu) {
+      // 1. ur-PK male.
+      chosen = firstMaleWithLocale('ur-pk');
+      reason = 'priority #1 ur-PK male';
+    } else {
+      // 2. en-US male, then 3. en-GB male.
+      chosen = firstMaleWithLocale('en-us');
+      reason = 'priority #2 en-US male';
+      chosen ??= firstMaleWithLocale('en-gb');
+      reason = 'priority #3 en-GB male';
+    }
+
+    // 4. No male voice in the requested language — fall back to the
+    // highest-quality male voice available in any locale, so the reply
+    // is still read by a male voice even if it won't be native-accented.
+    if (chosen == null) {
+      final maleAny = voices.where(isMale).toList();
+      if (maleAny.isNotEmpty) {
+        final network = maleAny.where((v) => v['name']!.toLowerCase().contains('network'));
+        chosen = network.isNotEmpty ? network.first : maleAny.first;
+        reason = 'priority #4 best available male voice (different locale)';
       }
     }
 
-    // 2. No explicit gender tag — prefer a higher-quality "network" voice
-    // over a "local" one, as long as it isn't explicitly flagged female.
-    final untaggedNetwork = matching.where((v) {
-      final key = v['name']!.toLowerCase();
-      return key.contains('network') && !matchesAny(key, _femaleHints);
-    });
-    if (untaggedNetwork.isNotEmpty) return untaggedNetwork.first;
+    // 5. No male voice exists anywhere — never hardcode a female voice;
+    // just pick the best available voice for the requested language.
+    if (chosen == null && matching.isNotEmpty) {
+      final untaggedNetwork = matching.where((v) {
+        final key = v['name']!.toLowerCase();
+        return key.contains('network') && !matchesAny(key, _femaleHints);
+      });
+      if (untaggedNetwork.isNotEmpty) {
+        chosen = untaggedNetwork.first;
+        reason = 'no male voice available — best untagged network voice';
+      } else {
+        final untagged =
+            matching.where((v) => !matchesAny(v['name']!.toLowerCase(), _femaleHints));
+        chosen = untagged.isNotEmpty ? untagged.first : matching.first;
+        reason = untagged.isNotEmpty
+            ? 'no male voice available — best untagged voice'
+            : 'no male or untagged voice available — best voice for language';
+      }
+    }
 
-    // 3. Any voice for the language not explicitly flagged female — still
-    // better than leaving an unpredictable default in a mixed voice pack.
-    final untagged =
-        matching.where((v) => !matchesAny(v['name']!.toLowerCase(), _femaleHints));
-    if (untagged.isNotEmpty) return untagged.first;
-
-    // 4. Last resort: the single best (first) voice available for the
-    // language, even if it's flagged female — satisfies "always speak in
-    // the detected language" over "always speak with a male voice" when
-    // a language only ships one voice.
-    return matching.first;
+    _selectedVoice[isUrdu] = chosen;
+    if (chosen != null) {
+      debugPrint(
+        'TtsVoiceService: selected voice "${chosen['name']}" '
+        '(${chosen['locale']}) for ${isUrdu ? 'Urdu' : 'English'} — $reason.',
+      );
+    } else {
+      debugPrint(
+        'TtsVoiceService: no voice available for ${isUrdu ? 'Urdu' : 'English'} — '
+        'using engine default.',
+      );
+    }
+    return chosen;
   }
 
   static Future<void> _tryAsync(Future<void> Function() action) async {

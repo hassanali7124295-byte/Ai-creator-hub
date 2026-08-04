@@ -110,6 +110,12 @@ class _ChatScreenState extends State<ChatScreen> {
   final VoiceInputService _voiceInput = VoiceInputService();
   _MicState _micState = _MicState.idle;
 
+  // Guards the short stop-then-start transition in `_toggleSpeak` so a
+  // rapid double-tap can't fire two overlapping start sequences — it does
+  // NOT hold for the whole duration of speech, so tapping again to stop
+  // mid-speech still works immediately (see `_toggleSpeak`).
+  bool _speakTransitioning = false;
+
   @override
   void initState() {
     super.initState();
@@ -208,6 +214,16 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _sendMessage() async {
+    // If voice input is still active, stop it *before* reading the field:
+    // a listening session keeps streaming recognized words into
+    // `_inputController` (see `_onVoiceTap`'s `onResult`), so leaving it
+    // running would let a late speech result repopulate the field right
+    // after it's cleared below, leaving stale/duplicate text behind.
+    if (_micState != _MicState.idle) {
+      await _voiceInput.cancel();
+      if (mounted) setState(() => _micState = _MicState.idle);
+    }
+
     final text = _inputController.text.trim();
     final pendingAttachment = _pendingAttachment;
     if ((text.isEmpty && pendingAttachment == null) || _isSending) return;
@@ -328,20 +344,34 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// Starts reading [text] aloud, or stops if [index] is already speaking.
-  /// Only one message plays at a time — starting a new one cancels any
-  /// reply currently being read.
+  /// Only one message plays at a time — starting a new one always stops
+  /// any reply currently being read first, so only one TTS session can
+  /// ever be active. `_speakTransitioning` guards against a rapid repeat
+  /// tap firing a second stop-then-start sequence before the first one has
+  /// finished, which is what could otherwise spin up two sessions.
   Future<void> _toggleSpeak(int index, String text) async {
-    if (_speakingIndex == index) {
+    if (_speakTransitioning) return;
+    _speakTransitioning = true;
+    try {
+      if (_speakingIndex == index) {
+        await _tts.stop();
+        if (mounted) setState(() => _speakingIndex = null);
+        return;
+      }
       await _tts.stop();
-      if (mounted) setState(() => _speakingIndex = null);
-      return;
+      if (!mounted) return;
+      setState(() => _speakingIndex = index);
+      // Auto-detects Urdu vs English from the reply's script and speaks
+      // with the best male voice available for that language. Not
+      // awaited to completion here — `awaitSpeakCompletion` means this
+      // Future only resolves once speech finishes, and completion is
+      // already handled by the completion/cancel/error handlers set in
+      // `initState`, so holding the lock for that long would block the
+      // person from tapping Speak again to stop early.
+      unawaited(TtsVoiceService.speak(_tts, text));
+    } finally {
+      _speakTransitioning = false;
     }
-    await _tts.stop();
-    if (!mounted) return;
-    setState(() => _speakingIndex = index);
-    // Auto-detects Urdu vs English from the reply's script and speaks
-    // with the best male voice available for that language.
-    await TtsVoiceService.speak(_tts, text);
   }
 
   /// Re-asks Gemini for a fresh reply to the user prompt that produced the
