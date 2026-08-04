@@ -5,6 +5,9 @@ import 'package:animate_do/animate_do.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:speech_to_text/speech_recognition_error.dart';
+import 'package:speech_to_text/speech_recognition_result.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 import '../core/providers/conversation_provider.dart';
 import '../core/services/attachment_processor_service.dart';
@@ -76,6 +79,16 @@ class _ChatScreenState extends State<ChatScreen> {
   final FlutterTts _tts = FlutterTts();
   int? _speakingIndex;
 
+  // Voice input (Step 18.5): on-device speech-to-text for the composer's
+  // mic button. `_speech.initialize()` is what actually triggers the OS
+  // mic-permission prompt (on first use), so it's called lazily on tap
+  // rather than at screen start. `_baseTextBeforeListening` lets live
+  // transcription append into whatever the user had already typed instead
+  // of overwriting it.
+  final stt.SpeechToText _speech = stt.SpeechToText();
+  bool _isListening = false;
+  String _baseTextBeforeListening = '';
+
   // Streaming reveal (Step 11): identifies the one AI reply — by object
   // identity, not index — that should animate in gradually. Only ever
   // set right after a fresh reply arrives (send or regenerate), never for
@@ -111,12 +124,13 @@ class _ChatScreenState extends State<ChatScreen> {
     _tts.setErrorHandler((_) {
       if (mounted) setState(() => _speakingIndex = null);
     });
-    // Fire-and-forget: picks the best available male English voice and a
-    // natural rate/pitch. Runs once per screen lifetime; if it's still in
-    // flight when the person taps "Read aloud" the first time, that first
-    // utterance just uses the engine default and every one after sounds
-    // right — never blocks or delays the tap itself.
-    unawaited(TtsVoiceService.configureNaturalMaleVoice(_tts));
+    // Fire-and-forget: picks the best available male English voice and
+    // male Urdu voice, plus a natural rate/pitch. Runs once per screen
+    // lifetime; if it's still in flight when the person taps "Read aloud"
+    // the first time, that first utterance just uses the engine default
+    // and every one after sounds right — never blocks or delays the tap
+    // itself.
+    unawaited(TtsVoiceService.configureNaturalVoices(_tts));
   }
 
   Future<void> _loadHistory() async {
@@ -190,6 +204,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _inputController.dispose();
     _scrollController.dispose();
     _tts.stop();
+    if (_isListening) _speech.stop();
     super.dispose();
   }
 
@@ -325,7 +340,9 @@ class _ChatScreenState extends State<ChatScreen> {
     await _tts.stop();
     if (!mounted) return;
     setState(() => _speakingIndex = index);
-    await _tts.speak(text);
+    // Auto-picks the Urdu male voice for Urdu-script replies and the
+    // English male voice for everything else (including Roman Urdu).
+    await TtsVoiceService.speak(_tts, text);
   }
 
   /// Re-asks Gemini for a fresh reply to the user prompt that produced the
@@ -490,14 +507,77 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() => _mode = chosen);
   }
 
-  /// Placeholder for future speech-to-text input.
-  void _onVoiceTap() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Voice input coming soon.'),
-        duration: Duration(seconds: 2),
+  /// Mic button on the composer: tap once to request the mic permission
+  /// (if not already granted) and start listening with live transcription
+  /// inserted into the input field; tap again (or the engine stopping on
+  /// its own after a pause) to stop.
+  Future<void> _onVoiceTap() async {
+    HapticFeedback.selectionClick();
+
+    if (_isListening) {
+      await _speech.stop();
+      if (mounted) setState(() => _isListening = false);
+      return;
+    }
+
+    // This is what actually triggers the OS mic-permission dialog the
+    // first time it's called; returns false if the person denies it (or
+    // no speech engine is available on the device).
+    final available = await _speech.initialize(
+      onStatus: _onSpeechStatus,
+      onError: _onSpeechError,
+    );
+    if (!mounted) return;
+    if (!available) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Microphone access is needed for voice input. '
+            'Please allow it in your device settings.',
+          ),
+          duration: Duration(seconds: 3),
+        ),
+      );
+      return;
+    }
+
+    // Live transcription appends to whatever was already typed, rather
+    // than replacing it, so tapping the mic mid-draft doesn't lose text.
+    final existing = _inputController.text;
+    _baseTextBeforeListening =
+        existing.isEmpty || existing.endsWith(' ') ? existing : '$existing ';
+
+    setState(() => _isListening = true);
+    await _speech.listen(
+      onResult: _onSpeechResult,
+      listenOptions: stt.SpeechListenOptions(
+        partialResults: true,
+        cancelOnError: true,
+        listenMode: stt.ListenMode.dictation,
       ),
     );
+  }
+
+  void _onSpeechResult(SpeechRecognitionResult result) {
+    if (!mounted) return;
+    final combined = '$_baseTextBeforeListening${result.recognizedWords}';
+    setState(() {
+      _inputController.text = combined;
+      _inputController.selection =
+          TextSelection.collapsed(offset: combined.length);
+    });
+  }
+
+  void _onSpeechStatus(String status) {
+    if (!mounted) return;
+    if (status == 'done' || status == 'notListening') {
+      setState(() => _isListening = false);
+    }
+  }
+
+  void _onSpeechError(SpeechRecognitionError error) {
+    if (!mounted) return;
+    setState(() => _isListening = false);
   }
 
   @override
@@ -696,6 +776,7 @@ class _ChatScreenState extends State<ChatScreen> {
               onSend: _sendMessage,
               onAttachment: _openAttachmentSheet,
               onVoice: _onVoiceTap,
+              isListening: _isListening,
             ),
           ],
         ),
@@ -1006,6 +1087,7 @@ class _ChatInputBar extends StatefulWidget {
   final VoidCallback onSend;
   final VoidCallback onAttachment;
   final VoidCallback onVoice;
+  final bool isListening;
 
   const _ChatInputBar({
     required this.controller,
@@ -1013,6 +1095,7 @@ class _ChatInputBar extends StatefulWidget {
     required this.onSend,
     required this.onAttachment,
     required this.onVoice,
+    this.isListening = false,
   });
 
   @override
@@ -1055,6 +1138,7 @@ class _ChatInputBarState extends State<_ChatInputBar> {
 
     final hasText = controller.text.trim().isNotEmpty;
     final isDark = theme.brightness == Brightness.dark;
+    final isListening = widget.isListening;
 
     return SafeArea(
       top: false,
@@ -1145,23 +1229,32 @@ class _ChatInputBarState extends State<_ChatInputBar> {
               Padding(
                 padding: const EdgeInsets.only(bottom: 2),
                 child: Tooltip(
-                  message: 'Voice input',
+                  message: isListening ? 'Stop listening' : 'Voice input',
                   child: Material(
-                    color: Colors.transparent,
+                    color: isListening
+                        ? theme.colorScheme.primary.withOpacity(0.15)
+                        : Colors.transparent,
                     shape: const CircleBorder(),
                     child: InkWell(
                       customBorder: const CircleBorder(),
-                      onTap: () {
-                        HapticFeedback.selectionClick();
-                        onVoice();
-                      },
+                      onTap: onVoice,
                       child: Padding(
                         padding: const EdgeInsets.all(11),
-                        child: Icon(
-                          Icons.mic_none_rounded,
-                          size: 21,
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
+                        child: isListening
+                            ? Pulse(
+                                infinite: true,
+                                duration: const Duration(milliseconds: 700),
+                                child: Icon(
+                                  Icons.mic_rounded,
+                                  size: 21,
+                                  color: theme.colorScheme.primary,
+                                ),
+                              )
+                            : Icon(
+                                Icons.mic_none_rounded,
+                                size: 21,
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
                       ),
                     ),
                   ),

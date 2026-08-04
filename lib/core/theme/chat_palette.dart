@@ -19,7 +19,10 @@ class ChatPalette {
   // read as too dark/heavy against surfaces in both light and dark mode.
   static const Color emeraldLight = Color(0xFF10B981); // emerald-500
   static const Color emeraldDark = Color(0xFF6EE7B7); // emerald-300
-  static const Color graphite = Color(0xFF37474F); // blue-graphite 800
+  // Step 18.5: was a blue-tinted "blue-graphite 800" (0xFF37474F) — swapped
+  // for a true neutral gray (zero blue channel bias) to keep dark mode to
+  // green / white / black / gray only.
+  static const Color graphite = Color(0xFF3F3F46); // neutral gray-800
 
   /// Step 12.4: a muted "sea green" used specifically for the user
   /// message bubble and the typing dot — noticeably lighter/softer than

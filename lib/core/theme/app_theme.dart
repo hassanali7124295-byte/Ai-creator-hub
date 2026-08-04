@@ -4,16 +4,22 @@ import 'package:google_fonts/google_fonts.dart';
 /// Centralized theme configuration for Pak AI.
 ///
 /// Design language: modern "premium AI product" look —
-/// deep indigo/violet primary, soft rounded cards, subtle elevation,
+/// emerald green primary, soft rounded cards, subtle elevation,
 /// and clean typography (Poppins/Inter via Google Fonts).
+///
+/// Step 18.5: the app's whole palette (light and dark) is now green /
+/// white / black / gray only — the old violet primary and cyan-teal
+/// secondary both read as blue, so both were replaced with shades of the
+/// same emerald green [ChatPalette] already uses, keeping the app-wide
+/// theme and the chat screen's own palette visually consistent.
 class AppTheme {
   AppTheme._();
 
-  // Brand colors
-  static const Color primaryLight = Color(0xFF6C5CE7); // violet
-  static const Color secondaryLight = Color(0xFF00CEC9); // teal accent
-  static const Color primaryDark = Color(0xFF8C7CFF);
-  static const Color secondaryDark = Color(0xFF2EE6E0);
+  // Brand colors — emerald green, matching ChatPalette's swatch.
+  static const Color primaryLight = Color(0xFF0E9F6E); // emerald-600
+  static const Color secondaryLight = Color(0xFF6B7280); // neutral gray-500
+  static const Color primaryDark = Color(0xFF6EE7B7); // emerald-300
+  static const Color secondaryDark = Color(0xFF9CA3AF); // neutral gray-400
 
   static const double borderRadius = 20.0;
 
