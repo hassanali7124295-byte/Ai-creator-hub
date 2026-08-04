@@ -124,12 +124,12 @@ class _ChatScreenState extends State<ChatScreen> {
     _tts.setErrorHandler((_) {
       if (mounted) setState(() => _speakingIndex = null);
     });
-    // Fire-and-forget: picks the best available male English voice and a
-    // natural rate/pitch. Runs once per screen lifetime; if it's still in
-    // flight when the person taps "Read aloud" the first time, that first
-    // utterance just uses the engine default and every one after sounds
-    // right — never blocks or delays the tap itself.
-    unawaited(TtsVoiceService.configureNaturalMaleVoice(_tts));
+    // Fire-and-forget: warms the voice cache and applies natural
+    // rate/pitch/volume defaults. Runs once per screen lifetime; if it's
+    // still in flight when the person taps "Read aloud" the first time,
+    // `TtsVoiceService.speak` applies the same setup itself before
+    // speaking — never blocks or delays the tap itself.
+    unawaited(TtsVoiceService.initialize(_tts));
   }
 
   Future<void> _loadHistory() async {
@@ -339,7 +339,9 @@ class _ChatScreenState extends State<ChatScreen> {
     await _tts.stop();
     if (!mounted) return;
     setState(() => _speakingIndex = index);
-    await _tts.speak(text);
+    // Auto-detects Urdu vs English from the reply's script and speaks
+    // with the best male voice available for that language.
+    await TtsVoiceService.speak(_tts, text);
   }
 
   /// Re-asks Gemini for a fresh reply to the user prompt that produced the
