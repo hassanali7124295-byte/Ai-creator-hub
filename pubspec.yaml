@@ -48,6 +48,10 @@ dependencies:
   # About / Privacy Policy screens.
   url_launcher: ^6.3.1
 
+  # Step 19.3: real Google Sign-In (official Google account picker) —
+  # replaces the "Coming soon" placeholder on the Welcome screen.
+  google_sign_in: ^6.2.2
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -32,6 +32,54 @@ jobs:
       - name: Generate android/ with flutter create
         run: flutter create --platforms=android --org com.aicreatorhub --project-name ai_creator_hub .
 
+      - name: Rename Android package to com.pakai.ai (Step 20)
+        # `flutter create` above always scaffolds android/ fresh with the
+        # org/project-name applicationId (com.aicreatorhub.ai_creator_hub).
+        # Since android/ isn't committed, this step must re-apply the
+        # rename on every single build for it to actually be permanent —
+        # same pattern as the android:label and RECORD_AUDIO patches
+        # below. Renames applicationId + namespace in build.gradle.kts,
+        # moves MainActivity.kt into the new package folder, and updates
+        # its `package` declaration. The Dart package name in
+        # pubspec.yaml (ai_creator_hub) is untouched — Android's
+        # applicationId/namespace and Flutter's Dart package name are
+        # independent, so lib/** imports are unaffected.
+        run: |
+          set -e
+          OLD_PKG="com.aicreatorhub.ai_creator_hub"
+          NEW_PKG="com.pakai.ai"
+          OLD_DIR="android/app/src/main/kotlin/com/aicreatorhub/ai_creator_hub"
+          NEW_DIR="android/app/src/main/kotlin/com/pakai/ai"
+          GRADLE_FILE="android/app/build.gradle.kts"
+          MANIFEST_FILE="android/app/src/main/AndroidManifest.xml"
+
+          test -f "$GRADLE_FILE" || { echo "::error::$GRADLE_FILE not found — flutter create output may have changed"; exit 1; }
+          test -f "$OLD_DIR/MainActivity.kt" || { echo "::error::$OLD_DIR/MainActivity.kt not found — flutter create output may have changed"; exit 1; }
+
+          # 1. applicationId + namespace in build.gradle.kts.
+          sed -i "s/$OLD_PKG/$NEW_PKG/g" "$GRADLE_FILE"
+
+          # 2. Move MainActivity.kt into the new package folder and update
+          #    its package declaration.
+          mkdir -p "$NEW_DIR"
+          mv "$OLD_DIR/MainActivity.kt" "$NEW_DIR/MainActivity.kt"
+          sed -i "s/^package .*/package $NEW_PKG/" "$NEW_DIR/MainActivity.kt"
+          # Clean up the now-empty old package folders.
+          rmdir "android/app/src/main/kotlin/com/aicreatorhub/ai_creator_hub" 2>/dev/null || true
+          rmdir "android/app/src/main/kotlin/com/aicreatorhub" 2>/dev/null || true
+
+          # 3. Legacy AndroidManifest.xml `package="..."` attribute, if the
+          #    template ever includes one (modern AGP sets namespace via
+          #    Gradle only, so this is usually a no-op — kept defensive).
+          if grep -q "package=\"$OLD_PKG\"" "$MANIFEST_FILE" 2>/dev/null; then
+            sed -i "s/package=\"$OLD_PKG\"/package=\"$NEW_PKG\"/" "$MANIFEST_FILE"
+          fi
+
+          echo "--- Verification ---"
+          grep -n "applicationId\|namespace" "$GRADLE_FILE"
+          grep -n "^package" "$NEW_DIR/MainActivity.kt"
+          find android/app/src/main/kotlin -type f
+
       - name: Install dependencies
         run: flutter pub get
 

@@ -13,9 +13,13 @@ import 'welcome_screen.dart';
 ///
 /// Step 19.2: [ProfileScreen] is now only ever reached *after* the
 /// [WelcomeScreen] auth gate, so there's no "not signed in" state to
-/// render here any more — this screen just reflects Guest vs. (future)
-/// real account status via [AuthPrefs], and offers Logout, which clears
-/// the auth flag and returns the user to [WelcomeScreen].
+/// render here any more.
+///
+/// Step 19.3: for a real Google session, this screen now shows the
+/// account's actual photo, name, and email (via [AuthPrefs]) instead of
+/// the generic Guest placeholder, and "Sign Out" also ends the Google
+/// session itself (via [GoogleAuthService]) before clearing local prefs
+/// and returning the user to [WelcomeScreen].
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
 
@@ -27,6 +31,10 @@ class _ProfileScreenState extends State<ProfileScreen>
     with SingleTickerProviderStateMixin {
   bool _isGuest = false;
   bool _isLoading = true;
+  String? _loginType;
+  String? _userName;
+  String? _userEmail;
+  String? _userPhotoUrl;
 
   late final AnimationController _entranceController;
   late final Animation<double> _fadeAnimation;
@@ -54,9 +62,17 @@ class _ProfileScreenState extends State<ProfileScreen>
 
   Future<void> _loadAuthState() async {
     final isGuest = await AuthPrefs.isGuest();
+    final loginType = await AuthPrefs.loginType();
+    final name = await AuthPrefs.userName();
+    final email = await AuthPrefs.userEmail();
+    final photoUrl = await AuthPrefs.userPhotoUrl();
     if (!mounted) return;
     setState(() {
       _isGuest = isGuest;
+      _loginType = loginType;
+      _userName = name;
+      _userEmail = email;
+      _userPhotoUrl = photoUrl;
       _isLoading = false;
     });
     _entranceController.forward();
@@ -75,6 +91,11 @@ class _ProfileScreenState extends State<ProfileScreen>
   }
 
   Future<void> _logout() async {
+    // For a real Google session, also sign out of Google itself (not just
+    // clear local prefs) so the account picker is offered fresh next time.
+    if (_loginType == 'google') {
+      await GoogleAuthService.signOut();
+    }
     await AuthPrefs.signOut();
     if (!mounted) return;
     // Clear the whole stack — Chat, drawer routes, this screen — so
@@ -129,7 +150,14 @@ class _ProfileScreenState extends State<ProfileScreen>
                   child: ListView(
                     padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
                     children: [
-                      _ProfileHeaderCard(scheme: scheme, theme: theme, isGuest: _isGuest),
+                      _ProfileHeaderCard(
+                        scheme: scheme,
+                        theme: theme,
+                        isGuest: _isGuest,
+                        userName: _userName,
+                        userEmail: _userEmail,
+                        userPhotoUrl: _userPhotoUrl,
+                      ),
                       const SizedBox(height: 28),
                       _SectionLabel('Account', color: scheme.primary),
                       _ProfileCard(
@@ -204,10 +232,12 @@ class _ProfileScreenState extends State<ProfileScreen>
                           _ProfileTile(
                             scheme: scheme,
                             leadingIcon: Icons.logout_rounded,
-                            title: 'Logout',
+                            title: 'Sign Out',
                             subtitle: _isGuest
                                 ? 'End guest session'
-                                : 'Sign out of your account',
+                                : (_userEmail?.isNotEmpty ?? false)
+                                    ? 'Sign out of $_userEmail'
+                                    : 'Sign out of your account',
                             iconColor: scheme.error,
                             titleColor: scheme.error,
                             onTap: _logout,
@@ -231,21 +261,33 @@ class _ProfileHeaderCard extends StatelessWidget {
   final ColorScheme scheme;
   final ThemeData theme;
   final bool isGuest;
+  final String? userName;
+  final String? userEmail;
+  final String? userPhotoUrl;
 
   const _ProfileHeaderCard({
     required this.scheme,
     required this.theme,
     required this.isGuest,
+    this.userName,
+    this.userEmail,
+    this.userPhotoUrl,
   });
 
   @override
   Widget build(BuildContext context) {
     final isDark = scheme.brightness == Brightness.dark;
 
-    final String headline = isGuest ? 'Guest User' : 'Pak AI User';
+    final String headline = isGuest
+        ? 'Guest User'
+        : (userName?.isNotEmpty ?? false)
+            ? userName!
+            : 'Pak AI User';
     final String subtitle = isGuest
         ? "You're browsing as a guest — sign in anytime to sync your conversations."
-        : 'Signed in to Pak AI.';
+        : (userEmail?.isNotEmpty ?? false)
+            ? userEmail!
+            : 'Signed in to Pak AI.';
 
     return Container(
       padding: const EdgeInsets.fromLTRB(24, 32, 24, 28),
@@ -273,7 +315,11 @@ class _ProfileHeaderCard extends StatelessWidget {
       ),
       child: Column(
         children: [
-          _LargeAvatar(scheme: scheme, isGuest: isGuest),
+          _LargeAvatar(
+            scheme: scheme,
+            isGuest: isGuest,
+            photoUrl: userPhotoUrl,
+          ),
           const SizedBox(height: 20),
           AnimatedSwitcher(
             duration: const Duration(milliseconds: 260),
@@ -323,10 +369,21 @@ class _LargeAvatar extends StatelessWidget {
   final ColorScheme scheme;
   final bool isGuest;
 
-  const _LargeAvatar({required this.scheme, required this.isGuest});
+  /// The real Google profile photo URL, when signed in with Google. Null
+  /// for Guest (or if Google didn't provide one), in which case the
+  /// generic person glyph is shown instead.
+  final String? photoUrl;
+
+  const _LargeAvatar({
+    required this.scheme,
+    required this.isGuest,
+    this.photoUrl,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final hasPhoto = !isGuest && (photoUrl?.isNotEmpty ?? false);
+
     return Container(
       width: 96,
       height: 96,
@@ -355,12 +412,43 @@ class _LargeAvatar extends StatelessWidget {
             opacity: animation,
             child: ScaleTransition(scale: animation, child: child),
           ),
-          child: Icon(
-            isGuest ? Icons.person_rounded : Icons.person_outline_rounded,
-            key: ValueKey(isGuest),
-            size: 48,
-            color: scheme.onPrimary,
-          ),
+          child: hasPhoto
+              ? ClipOval(
+                  key: ValueKey('photo-$photoUrl'),
+                  child: Image.network(
+                    photoUrl!,
+                    width: 96,
+                    height: 96,
+                    fit: BoxFit.cover,
+                    // If the real photo fails to load (no network, dead
+                    // URL, etc.), fall back to the generic glyph rather
+                    // than an empty/broken image.
+                    errorBuilder: (context, error, stackTrace) => Icon(
+                      Icons.person_outline_rounded,
+                      size: 48,
+                      color: scheme.onPrimary,
+                    ),
+                    loadingBuilder: (context, child, progress) {
+                      if (progress == null) return child;
+                      return SizedBox(
+                        width: 28,
+                        height: 28,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.4,
+                          color: scheme.onPrimary,
+                        ),
+                      );
+                    },
+                  ),
+                )
+              : Icon(
+                  isGuest
+                      ? Icons.person_rounded
+                      : Icons.person_outline_rounded,
+                  key: ValueKey('icon-$isGuest'),
+                  size: 48,
+                  color: scheme.onPrimary,
+                ),
         ),
       ),
     );
