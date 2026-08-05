@@ -5,6 +5,7 @@ import 'core/theme/app_theme.dart';
 import 'core/providers/theme_provider.dart';
 import 'core/providers/conversation_provider.dart';
 import 'screens/chat_screen.dart';
+import 'screens/welcome_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -44,10 +45,48 @@ class PakAIApp extends StatelessWidget {
             theme: AppTheme.lightTheme,
             darkTheme: AppTheme.darkTheme,
             themeMode: themeProvider.themeMode,
-            home: const ChatScreen(),
+            home: const _AuthGate(),
           );
         },
       ),
     );
+  }
+}
+
+/// Step 19.2: root-level auth gate. Checks [AuthPrefs] once at cold start
+/// and sends the user to [WelcomeScreen] (never signed in, or just logged
+/// out) or straight to [ChatScreen] (already a guest, or in future
+/// actually signed in) — exactly the ChatGPT/Gemini/Claude-app pattern of
+/// never re-showing the welcome screen once a session exists.
+class _AuthGate extends StatefulWidget {
+  const _AuthGate();
+
+  @override
+  State<_AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<_AuthGate> {
+  bool? _signedIn;
+
+  @override
+  void initState() {
+    super.initState();
+    _check();
+  }
+
+  Future<void> _check() async {
+    final signedIn = await AuthPrefs.isSignedIn();
+    if (!mounted) return;
+    setState(() => _signedIn = signedIn);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_signedIn == null) {
+      // Brief splash while SharedPreferences resolves — avoids a flash of
+      // the wrong screen before Welcome/Chat actually mounts.
+      return const Scaffold(body: SizedBox.shrink());
+    }
+    return _signedIn! ? const ChatScreen() : const WelcomeScreen();
   }
 }

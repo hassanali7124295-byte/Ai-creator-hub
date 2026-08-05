@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/theme/chat_palette.dart';
 import 'about_screen.dart';
 import 'privacy_policy_screen.dart';
+import 'welcome_screen.dart';
 
 /// Premium Pak AI profile screen.
 ///
@@ -11,10 +11,11 @@ import 'privacy_policy_screen.dart';
 /// History, and Settings — never the app-wide violet [AppTheme] — so the
 /// whole authenticated-shell of the app stays visually consistent.
 ///
-/// Step 19: no Firebase/backend yet. Sign-in options only surface a
-/// SnackBar ("coming soon") except Guest, which persists a simple local
-/// flag via [SharedPreferences] so the header can reflect "Guest User"
-/// across app restarts.
+/// Step 19.2: [ProfileScreen] is now only ever reached *after* the
+/// [WelcomeScreen] auth gate, so there's no "not signed in" state to
+/// render here any more — this screen just reflects Guest vs. (future)
+/// real account status via [AuthPrefs], and offers Logout, which clears
+/// the auth flag and returns the user to [WelcomeScreen].
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
 
@@ -24,8 +25,6 @@ class ProfileScreen extends StatefulWidget {
 
 class _ProfileScreenState extends State<ProfileScreen>
     with SingleTickerProviderStateMixin {
-  static const _guestFlagKey = 'pak_ai_guest_mode';
-
   bool _isGuest = false;
   bool _isLoading = true;
 
@@ -50,24 +49,17 @@ class _ProfileScreenState extends State<ProfileScreen>
     ).animate(
       CurvedAnimation(parent: _entranceController, curve: Curves.easeOutCubic),
     );
-    _loadGuestFlag();
+    _loadAuthState();
   }
 
-  Future<void> _loadGuestFlag() async {
-    final prefs = await SharedPreferences.getInstance();
+  Future<void> _loadAuthState() async {
+    final isGuest = await AuthPrefs.isGuest();
     if (!mounted) return;
     setState(() {
-      _isGuest = prefs.getBool(_guestFlagKey) ?? false;
+      _isGuest = isGuest;
       _isLoading = false;
     });
     _entranceController.forward();
-  }
-
-  Future<void> _setGuestMode() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_guestFlagKey, true);
-    if (!mounted) return;
-    setState(() => _isGuest = true);
   }
 
   void _showSnack(String message, ColorScheme scheme) {
@@ -82,33 +74,14 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
   }
 
-  Future<void> _openSignInSheet(ColorScheme scheme, ThemeData theme) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (sheetContext) {
-        return Theme(
-          data: theme,
-          child: _SignInSheet(
-            scheme: scheme,
-            onGoogle: () {
-              Navigator.of(sheetContext).pop();
-              _showSnack('Google login coming soon', scheme);
-            },
-            onEmail: () {
-              Navigator.of(sheetContext).pop();
-              _showSnack('Email login coming soon', scheme);
-            },
-            onGuest: () async {
-              Navigator.of(sheetContext).pop();
-              await _setGuestMode();
-              if (!mounted) return;
-              _showSnack('Guest mode activated', scheme);
-            },
-          ),
-        );
-      },
+  Future<void> _logout() async {
+    await AuthPrefs.signOut();
+    if (!mounted) return;
+    // Clear the whole stack — Chat, drawer routes, this screen — so
+    // there's nothing to pop back into behind Welcome.
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const WelcomeScreen()),
+      (route) => false,
     );
   }
 
@@ -124,7 +97,6 @@ class _ProfileScreenState extends State<ProfileScreen>
     // doc above. Threaded explicitly into every widget below.
     final theme = ChatPalette.themeFor(context);
     final scheme = theme.colorScheme;
-    const isSignedIn = false; // No backend yet (Step 19) — always signed out.
 
     return Theme(
       data: theme,
@@ -157,13 +129,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                   child: ListView(
                     padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
                     children: [
-                      _ProfileHeaderCard(
-                        scheme: scheme,
-                        theme: theme,
-                        isSignedIn: isSignedIn,
-                        isGuest: _isGuest,
-                        onSignInTap: () => _openSignInSheet(scheme, theme),
-                      ),
+                      _ProfileHeaderCard(scheme: scheme, theme: theme, isGuest: _isGuest),
                       const SizedBox(height: 28),
                       _SectionLabel('Account', color: scheme.primary),
                       _ProfileCard(
@@ -230,6 +196,24 @@ class _ProfileScreenState extends State<ProfileScreen>
                           ),
                         ],
                       ),
+                      const SizedBox(height: 20),
+                      _SectionLabel('Session', color: scheme.primary),
+                      _ProfileCard(
+                        scheme: scheme,
+                        children: [
+                          _ProfileTile(
+                            scheme: scheme,
+                            leadingIcon: Icons.logout_rounded,
+                            title: 'Logout',
+                            subtitle: _isGuest
+                                ? 'End guest session'
+                                : 'Sign out of your account',
+                            iconColor: scheme.error,
+                            titleColor: scheme.error,
+                            onTap: _logout,
+                          ),
+                        ],
+                      ),
                     ],
                   ),
                 ),
@@ -239,32 +223,29 @@ class _ProfileScreenState extends State<ProfileScreen>
   }
 }
 
-/// Large avatar + welcome copy + sign-in CTA, in a soft emerald-tinted
-/// card. Swaps its title/subtitle/CTA with an [AnimatedSwitcher] whenever
-/// [isGuest] or [isSignedIn] changes.
+/// Large avatar + account-status copy, in a soft emerald-tinted card.
+/// Swaps its title/subtitle with an [AnimatedSwitcher] whenever [isGuest]
+/// changes (e.g. the moment Logout clears it, if this widget were ever
+/// rebuilt in place instead of navigated away from).
 class _ProfileHeaderCard extends StatelessWidget {
   final ColorScheme scheme;
   final ThemeData theme;
-  final bool isSignedIn;
   final bool isGuest;
-  final VoidCallback onSignInTap;
 
   const _ProfileHeaderCard({
     required this.scheme,
     required this.theme,
-    required this.isSignedIn,
     required this.isGuest,
-    required this.onSignInTap,
   });
 
   @override
   Widget build(BuildContext context) {
     final isDark = scheme.brightness == Brightness.dark;
 
-    final String headline = isGuest ? 'Guest User' : 'Welcome to Pak AI';
+    final String headline = isGuest ? 'Guest User' : 'Pak AI User';
     final String subtitle = isGuest
-        ? 'Browsing as a guest — sign in anytime to sync your conversations.'
-        : 'Sign in to sync conversations across devices.';
+        ? "You're browsing as a guest — sign in anytime to sync your conversations."
+        : 'Signed in to Pak AI.';
 
     return Container(
       padding: const EdgeInsets.fromLTRB(24, 32, 24, 28),
@@ -307,7 +288,7 @@ class _ProfileHeaderCard extends StatelessWidget {
               ),
             ),
             child: Column(
-              key: ValueKey('$isGuest-$isSignedIn'),
+              key: ValueKey(isGuest),
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
@@ -330,43 +311,6 @@ class _ProfileHeaderCard extends StatelessWidget {
               ],
             ),
           ),
-          if (!isSignedIn) ...[
-            const SizedBox(height: 24),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: onSignInTap,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: scheme.primary,
-                  foregroundColor: scheme.onPrimary,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  elevation: 0,
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      isGuest
-                          ? Icons.login_rounded
-                          : Icons.account_circle_outlined,
-                      size: 20,
-                    ),
-                    const SizedBox(width: 10),
-                    Text(
-                      'Sign In / Create Account',
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        color: scheme.onPrimary,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
         ],
       ),
     );
@@ -416,158 +360,6 @@ class _LargeAvatar extends StatelessWidget {
             key: ValueKey(isGuest),
             size: 48,
             color: scheme.onPrimary,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Premium rounded bottom sheet with the three sign-in options.
-class _SignInSheet extends StatelessWidget {
-  final ColorScheme scheme;
-  final VoidCallback onGoogle;
-  final VoidCallback onEmail;
-  final VoidCallback onGuest;
-
-  const _SignInSheet({
-    required this.scheme,
-    required this.onGoogle,
-    required this.onEmail,
-    required this.onGuest,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return SafeArea(
-      top: false,
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
-        decoration: BoxDecoration(
-          color: scheme.surfaceContainerHigh,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-          boxShadow: [
-            BoxShadow(
-              color: scheme.shadow.withOpacity(0.12),
-              blurRadius: 24,
-              offset: const Offset(0, -6),
-            ),
-          ],
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Center(
-              child: Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: scheme.outlineVariant,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-            Text(
-              'Sign in to Pak AI',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w700,
-                color: scheme.onSurface,
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Choose how you\'d like to continue',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(height: 24),
-            _SignInOptionButton(
-              scheme: scheme,
-              icon: Icons.g_mobiledata_rounded,
-              label: 'Continue with Google',
-              filled: true,
-              onTap: onGoogle,
-            ),
-            const SizedBox(height: 12),
-            _SignInOptionButton(
-              scheme: scheme,
-              icon: Icons.mail_outline_rounded,
-              label: 'Continue with Email',
-              filled: false,
-              onTap: onEmail,
-            ),
-            const SizedBox(height: 12),
-            _SignInOptionButton(
-              scheme: scheme,
-              icon: Icons.person_outline_rounded,
-              label: 'Continue as Guest',
-              filled: false,
-              onTap: onGuest,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// One tappable row inside [_SignInSheet] — either a solid emerald "primary"
-/// button (Google) or a soft outlined one (Email / Guest).
-class _SignInOptionButton extends StatelessWidget {
-  final ColorScheme scheme;
-  final IconData icon;
-  final String label;
-  final bool filled;
-  final VoidCallback onTap;
-
-  const _SignInOptionButton({
-    required this.scheme,
-    required this.icon,
-    required this.label,
-    required this.filled,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final backgroundColor =
-        filled ? scheme.primary : scheme.surfaceContainerHighest;
-    final foregroundColor = filled ? scheme.onPrimary : scheme.onSurface;
-
-    return Material(
-      color: backgroundColor,
-      borderRadius: BorderRadius.circular(16),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 18),
-          child: Row(
-            children: [
-              Icon(icon, size: 22, color: foregroundColor),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Text(
-                  label,
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    color: foregroundColor,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              Icon(
-                Icons.chevron_right_rounded,
-                size: 20,
-                color: foregroundColor.withOpacity(0.6),
-              ),
-            ],
           ),
         ),
       ),
@@ -649,13 +441,17 @@ class _ProfileDivider extends StatelessWidget {
 
 /// A premium Material 3 row: leading icon in a soft tinted circle, title,
 /// optional subtitle, and a chevron. Uses Material Symbols Rounded icon
-/// glyphs and the emerald [ColorScheme] throughout.
+/// glyphs and the emerald [ColorScheme] throughout. [iconColor]/[titleColor]
+/// let destructive rows (Logout) use the scheme's error color instead of
+/// primary, while staying on the same emerald [ColorScheme].
 class _ProfileTile extends StatelessWidget {
   final ColorScheme scheme;
   final IconData leadingIcon;
   final String title;
   final String? subtitle;
   final VoidCallback onTap;
+  final Color? iconColor;
+  final Color? titleColor;
 
   const _ProfileTile({
     required this.scheme,
@@ -663,11 +459,15 @@ class _ProfileTile extends StatelessWidget {
     required this.title,
     this.subtitle,
     required this.onTap,
+    this.iconColor,
+    this.titleColor,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final resolvedIconColor = iconColor ?? scheme.primary;
+    final resolvedTitleColor = titleColor ?? scheme.onSurface;
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -680,10 +480,10 @@ class _ProfileTile extends StatelessWidget {
                 width: 38,
                 height: 38,
                 decoration: BoxDecoration(
-                  color: scheme.primary.withOpacity(0.12),
+                  color: resolvedIconColor.withOpacity(0.12),
                   shape: BoxShape.circle,
                 ),
-                child: Icon(leadingIcon, size: 19, color: scheme.primary),
+                child: Icon(leadingIcon, size: 19, color: resolvedIconColor),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -695,7 +495,7 @@ class _ProfileTile extends StatelessWidget {
                       title,
                       style: theme.textTheme.bodyLarge?.copyWith(
                         fontWeight: FontWeight.w600,
-                        color: scheme.onSurface,
+                        color: resolvedTitleColor,
                       ),
                     ),
                     if (subtitle != null) ...[
