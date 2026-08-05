@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:animate_do/animate_do.dart';
-import 'package:flutter_tts/flutter_tts.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -76,10 +75,12 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _hasApiKey = true; // assume true until checked, to avoid a flash
   _PendingAttachment? _pendingAttachment;
 
-  // Read Aloud (Step 10): on-device TTS for AI replies. `_speakingIndex`
-  // tracks which message (if any) is currently being read, so only one
-  // bubble shows the "stop" state at a time.
-  final FlutterTts _tts = FlutterTts();
+  // Read Aloud (Step 21A): on-device TTS for AI replies, routed entirely
+  // through the shared `VoiceManager` singleton so only one message can
+  // ever be speaking across the whole app. `_speakingIndex` mirrors
+  // `VoiceManager`'s active id for this screen's messages, and is kept in
+  // sync by `_onVoiceStateChanged` — it's what the UI actually reads
+  // (`isSpeaking: _speakingIndex == index`), unchanged from before.
   int? _speakingIndex;
 
   // Streaming reveal (Step 11): identifies the one AI reply — by object
@@ -110,32 +111,32 @@ class _ChatScreenState extends State<ChatScreen> {
   final VoiceInputService _voiceInput = VoiceInputService();
   _MicState _micState = _MicState.idle;
 
-  // Guards the short stop-then-start transition in `_toggleSpeak` so a
-  // rapid double-tap can't fire two overlapping start sequences — it does
-  // NOT hold for the whole duration of speech, so tapping again to stop
-  // mid-speech still works immediately (see `_toggleSpeak`).
-  bool _speakTransitioning = false;
-
   @override
   void initState() {
     super.initState();
     _loadHistory();
     _checkApiKey();
-    _tts.setCompletionHandler(() {
-      if (mounted) setState(() => _speakingIndex = null);
-    });
-    _tts.setCancelHandler(() {
-      if (mounted) setState(() => _speakingIndex = null);
-    });
-    _tts.setErrorHandler((_) {
-      if (mounted) setState(() => _speakingIndex = null);
-    });
+    VoiceManager.instance.addListener(_onVoiceStateChanged);
     // Fire-and-forget: warms the voice cache and applies natural
-    // rate/pitch/volume defaults. Runs once per screen lifetime; if it's
+    // rate/pitch/volume defaults. Runs once per app lifetime; if it's
     // still in flight when the person taps "Read aloud" the first time,
-    // `TtsVoiceService.speak` applies the same setup itself before
-    // speaking — never blocks or delays the tap itself.
-    unawaited(TtsVoiceService.initialize(_tts));
+    // `VoiceManager.toggle` awaits the same setup itself before speaking —
+    // never blocks or delays the tap itself.
+    unawaited(VoiceManager.instance.ensureInitialized());
+  }
+
+  /// Mirrors `VoiceManager`'s active id into `_speakingIndex` — the local
+  /// state the UI already reads (`isSpeaking: _speakingIndex == index`).
+  /// Both the brief "loading" pause and full "speaking" are shown as the
+  /// same "stop" affordance the UI has always had; only idle/stopped/error
+  /// clear it.
+  void _onVoiceStateChanged(VoiceState state, Object? activeId) {
+    if (!mounted) return;
+    final isActiveHere = activeId is int && (state == VoiceState.loading || state == VoiceState.speaking);
+    final next = isActiveHere ? activeId as int : null;
+    if (next != _speakingIndex) {
+      setState(() => _speakingIndex = next);
+    }
   }
 
   Future<void> _loadHistory() async {
@@ -158,8 +159,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final provider = context.read<ConversationProvider>();
 
     if (_speakingIndex != null) {
-      await _tts.stop();
-      _speakingIndex = null;
+      await VoiceManager.instance.stop();
     }
     await provider.selectConversation(id);
     if (!mounted) return;
@@ -182,8 +182,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final provider = context.read<ConversationProvider>();
 
     if (_speakingIndex != null) {
-      await _tts.stop();
-      _speakingIndex = null;
+      await VoiceManager.instance.stop();
     }
     final id = await provider.startNewConversation();
     if (!mounted) return;
@@ -208,7 +207,8 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _inputController.dispose();
     _scrollController.dispose();
-    _tts.stop();
+    VoiceManager.instance.removeListener(_onVoiceStateChanged);
+    unawaited(VoiceManager.instance.stop());
     _voiceInput.cancel();
     super.dispose();
   }
@@ -344,34 +344,12 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// Starts reading [text] aloud, or stops if [index] is already speaking.
-  /// Only one message plays at a time — starting a new one always stops
-  /// any reply currently being read first, so only one TTS session can
-  /// ever be active. `_speakTransitioning` guards against a rapid repeat
-  /// tap firing a second stop-then-start sequence before the first one has
-  /// finished, which is what could otherwise spin up two sessions.
+  /// `VoiceManager` owns all the actual state transitions (loading →
+  /// speaking → idle/stopped/error) and guarantees only one message can
+  /// ever be speaking at a time, app-wide — this just forwards the tap and
+  /// lets `_onVoiceStateChanged` update `_speakingIndex` from the result.
   Future<void> _toggleSpeak(int index, String text) async {
-    if (_speakTransitioning) return;
-    _speakTransitioning = true;
-    try {
-      if (_speakingIndex == index) {
-        await _tts.stop();
-        if (mounted) setState(() => _speakingIndex = null);
-        return;
-      }
-      await _tts.stop();
-      if (!mounted) return;
-      setState(() => _speakingIndex = index);
-      // Auto-detects Urdu vs English from the reply's script and speaks
-      // with the best male voice available for that language. Not
-      // awaited to completion here — `awaitSpeakCompletion` means this
-      // Future only resolves once speech finishes, and completion is
-      // already handled by the completion/cancel/error handlers set in
-      // `initState`, so holding the lock for that long would block the
-      // person from tapping Speak again to stop early.
-      unawaited(TtsVoiceService.speak(_tts, text));
-    } finally {
-      _speakTransitioning = false;
-    }
+    await VoiceManager.instance.toggle(index, text);
   }
 
   /// Re-asks Gemini for a fresh reply to the user prompt that produced the
@@ -385,8 +363,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!userMessage.isUser) return;
 
     if (_speakingIndex != null) {
-      await _tts.stop();
-      _speakingIndex = null;
+      await VoiceManager.instance.stop();
     }
 
     setState(() {
@@ -435,8 +412,12 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _deleteMessage(int index) async {
     if (index < 0 || index >= _messages.length) return;
     if (_speakingIndex == index) {
-      await _tts.stop();
-      _speakingIndex = null;
+      await VoiceManager.instance.stop();
+    } else if (_speakingIndex != null && _speakingIndex! > index) {
+      // The speaking message isn't the one being deleted, but its index
+      // is about to shift down by one — keep VoiceManager's id in sync
+      // without touching playback.
+      VoiceManager.instance.reassignActiveId(_speakingIndex! - 1);
     }
     setState(() {
       _messages.removeAt(index);
