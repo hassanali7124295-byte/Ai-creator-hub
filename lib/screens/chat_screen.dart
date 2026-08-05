@@ -230,10 +230,12 @@ class _ChatScreenState extends State<ChatScreen> {
 
     ChatAttachment? attachmentMeta;
     GeminiInlinePart? attachmentPart;
+    String? attachmentExtractedText;
 
     if (pendingAttachment != null) {
-      // Show activity right away — compressing/reading a file can take a
-      // moment, and the send button's spinner is the only feedback for it.
+      // Show activity right away — compressing/reading a file (or
+      // extracting text from a PDF) can take a moment, and the send
+      // button's spinner is the only feedback for it.
       setState(() => _isSending = true);
       try {
         final processed = await AttachmentProcessorService.process(
@@ -242,6 +244,7 @@ class _ChatScreenState extends State<ChatScreen> {
         );
         attachmentMeta = processed.metadata;
         attachmentPart = processed.part;
+        attachmentExtractedText = processed.extractedText;
       } on AttachmentException catch (e) {
         _reportAttachmentFailure(e.message);
         return;
@@ -278,8 +281,17 @@ class _ChatScreenState extends State<ChatScreen> {
       // Drop the message we just added from history (it's sent as `prompt`).
       if (history.isNotEmpty) history.removeLast();
 
+      // A PDF's extracted text is folded into the outgoing prompt for
+      // *this* turn only — the chat bubble still shows just what the user
+      // typed (or the default prompt), and `history` above already used
+      // that shorter text, so a long document is never re-sent on every
+      // follow-up message.
+      final geminiPrompt = attachmentExtractedText != null
+          ? '$attachmentExtractedText\n\n${outgoingText}'
+          : outgoingText;
+
       final reply = await GeminiService.sendMessage(
-        outgoingText,
+        geminiPrompt,
         history: history,
         attachments: attachmentPart != null ? [attachmentPart] : const [],
         modeInstruction: _mode.systemPrompt,
