@@ -156,6 +156,21 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _followBottom = true;
   static const double _bottomFollowThreshold = 72;
 
+  // Step 26.1: true once new text has arrived while auto-scroll is paused
+  // (`!_followBottom`) — drives the floating "Jump to Latest" pill. Cleared
+  // the moment the person scrolls back to the bottom themselves or taps the
+  // pill. Kept separate from `_followBottom` so the pill only appears when
+  // there's actually something new to jump to, not just because the person
+  // happens to be scrolled up.
+  bool _newContentWhilePaused = false;
+
+  // Step 26.1: batches live-stream chunks into UI updates on a fixed
+  // cadence (see `_streamAiReply`) instead of calling `setState` for every
+  // chunk the network delivers — that's what keeps a fast stream from
+  // rendering jerky/chunk-by-chunk. Cancelled the moment the stream ends
+  // (normally, on error, or via Stop) and on dispose.
+  Timer? _streamFlushTimer;
+
   // Step 22B: zero or more attachments waiting to go out with the next
   // message, in the order they were picked (mixing images and PDFs freely).
   // `_attachmentsLocked` flips true the instant Send is tapped — before any
@@ -323,6 +338,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollController.dispose();
     VoiceManager.instance.removeListener(_onVoiceStateChanged);
     unawaited(VoiceManager.instance.stop());
+    _streamFlushTimer?.cancel();
     _streamSubscription?.cancel();
     _voiceInput.cancel();
     super.dispose();
@@ -331,15 +347,115 @@ class _ChatScreenState extends State<ChatScreen> {
   /// Tracks whether the list is currently scrolled to (near) the bottom,
   /// so streamed text only auto-follows while the person hasn't
   /// deliberately scrolled up to read something earlier — see
-  /// [_scrollToBottom].
+  /// [_scrollToBottom]. Also clears the "Jump to Latest" pill the moment
+  /// the person scrolls back to the bottom themselves.
   void _onScrollChanged() {
     if (!_scrollController.hasClients) return;
     final position = _scrollController.position;
     final distanceFromBottom = position.maxScrollExtent - position.pixels;
     final atBottom = distanceFromBottom <= _bottomFollowThreshold;
-    if (atBottom != _followBottom) {
+    if (atBottom == _followBottom) return;
+    if (!mounted) {
       _followBottom = atBottom;
+      return;
     }
+    setState(() {
+      _followBottom = atBottom;
+      if (atBottom) _newContentWhilePaused = false;
+    });
+  }
+
+  /// Step 26.1: fired the instant the person's finger starts a manual drag
+  /// on the message list — stops auto-scroll immediately, without waiting
+  /// for the resulting scroll position change to be reported (which
+  /// [_onScrollChanged] would otherwise pick up a frame or two later).
+  /// Programmatic scrolls (`animateTo`/`jumpTo` from `_scrollToBottom`)
+  /// have no `dragDetails`, so they never trip this.
+  bool _onListScrollNotification(ScrollNotification notification) {
+    if (notification is ScrollStartNotification &&
+        notification.dragDetails != null &&
+        _followBottom) {
+      setState(() => _followBottom = false);
+    }
+    return false;
+  }
+
+  /// Resumes auto-scroll and smoothly scrolls to the newest message —
+  /// the floating "Jump to Latest" pill's tap handler.
+  void _jumpToLatest() {
+    HapticFeedback.selectionClick();
+    setState(() {
+      _followBottom = true;
+      _newContentWhilePaused = false;
+    });
+    if (!_scrollController.hasClients) return;
+    _scrollController.animateTo(
+      _scrollController.position.maxScrollExtent,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOut,
+    );
+  }
+
+  /// Step 26.1: the floating "↓ Jump to Latest" pill, shown only while
+  /// auto-scroll is paused AND fresh text has actually arrived below the
+  /// fold (`_newContentWhilePaused`) — not merely because the person has
+  /// scrolled up to reread something. Lives in a `Positioned` overlay (not
+  /// in the list's own layout flow) and only ever fades/slides in place,
+  /// so its appearance never shifts or jitters the message list itself.
+  Widget _buildJumpToLatestButton(ThemeData theme) {
+    final visible = !_followBottom && _newContentWhilePaused;
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 12,
+      child: Center(
+        child: IgnorePointer(
+          ignoring: !visible,
+          child: AnimatedSlide(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOut,
+            offset: visible ? Offset.zero : const Offset(0, 0.5),
+            child: AnimatedOpacity(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOut,
+              opacity: visible ? 1 : 0,
+              child: Material(
+                color: theme.colorScheme.primary,
+                elevation: 3,
+                shadowColor: Colors.black.withOpacity(0.25),
+                borderRadius: BorderRadius.circular(20),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(20),
+                  onTap: _jumpToLatest,
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.arrow_downward_rounded,
+                          size: 16,
+                          color: theme.colorScheme.onPrimary,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          'Jump to Latest',
+                          style: theme.textTheme.labelMedium?.copyWith(
+                            color: theme.colorScheme.onPrimary,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _sendMessage() async {
@@ -505,6 +621,7 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() {
         _messages.add(aiMessage);
         _streamingMessage = aiMessage;
+        if (!_followBottom) _newContentWhilePaused = true;
       });
     } on GeminiException catch (e) {
       if (!mounted) return;
@@ -561,6 +678,38 @@ class _ChatScreenState extends State<ChatScreen> {
     final completer = Completer<void>();
     _streamCompleter = completer;
 
+    // Step 26.1: chunks land in `buffer` as fast as the network delivers
+    // them, but the UI only reflects `buffer` on a fixed ~75ms cadence (see
+    // `flush` + `_streamFlushTimer` below) — that's what turns a fast,
+    // bursty stream into smooth, evenly-paced text instead of a jumpy
+    // rebuild on every network chunk, and keeps `setState` calls to a
+    // handful per second no matter how quickly Gemini is sending text.
+    String lastRenderedText = '';
+    void flush() {
+      if (!mounted) return;
+      final text = buffer.toString();
+      if (text == lastRenderedText) return;
+      lastRenderedText = text;
+      setState(() {
+        if (insertIndex < _messages.length) {
+          _messages[insertIndex] = ChatMessage(
+            text: text,
+            isUser: false,
+            timestamp: placeholder.timestamp,
+          );
+        }
+        // Step 26.1: new text arrived while the person is reading further
+        // up — surface the "Jump to Latest" pill instead of forcing them
+        // back down.
+        if (!_followBottom) _newContentWhilePaused = true;
+      });
+      _scrollToBottom();
+    }
+
+    _streamFlushTimer?.cancel();
+    _streamFlushTimer =
+        Timer.periodic(const Duration(milliseconds: 75), (_) => flush());
+
     final subscription = GeminiService.sendMessageStream(
       prompt,
       history: history,
@@ -575,20 +724,10 @@ class _ChatScreenState extends State<ChatScreen> {
       },
       cancelOnError: true,
     );
-    subscription.onData((chunk) {
-      buffer.write(chunk);
-      if (!mounted) return;
-      setState(() {
-        if (insertIndex < _messages.length) {
-          _messages[insertIndex] = ChatMessage(
-            text: buffer.toString(),
-            isUser: false,
-            timestamp: placeholder.timestamp,
-          );
-        }
-      });
-      _scrollToBottom();
-    });
+    // Only buffers the chunk here — `flush()` (on its own timer) is solely
+    // responsible for pushing text into `_messages`/`setState`, so a burst
+    // of several chunks in a few milliseconds costs one rebuild, not many.
+    subscription.onData(buffer.write);
     _streamSubscription = subscription;
 
     try {
@@ -630,6 +769,15 @@ class _ChatScreenState extends State<ChatScreen> {
       // Otherwise: partial text already streamed in — keep it as-is,
       // same as a normal completion.
     } finally {
+      // Step 26.1: stop the periodic flush first — no further UI updates
+      // for this stream after this point, which is what makes Stop
+      // absolute ("no more text should appear after Stop") — then do one
+      // last synchronous flush so whatever text had already arrived (but
+      // hadn't hit its 75ms tick yet) is still shown, exactly as if it had
+      // finished normally.
+      _streamFlushTimer?.cancel();
+      _streamFlushTimer = null;
+      flush();
       await subscription.cancel();
       if (identical(_streamSubscription, subscription)) {
         _streamSubscription = null;
@@ -712,7 +860,19 @@ class _ChatScreenState extends State<ChatScreen> {
   /// an animation, since re-triggering a 300ms animateTo on every chunk is
   /// what causes jumpy/flickery scrolling during a fast stream.
   void _scrollToBottom({bool force = false}) {
-    if (force) _followBottom = true;
+    if (force && (!_followBottom || _newContentWhilePaused)) {
+      if (mounted) {
+        setState(() {
+          _followBottom = true;
+          _newContentWhilePaused = false;
+        });
+      } else {
+        _followBottom = true;
+        _newContentWhilePaused = false;
+      }
+    } else if (force) {
+      _followBottom = true;
+    }
     if (!_followBottom) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scrollController.hasClients) return;
@@ -1167,9 +1327,12 @@ class _ChatScreenState extends State<ChatScreen> {
           children: [
             if (!_hasApiKey) _ApiKeyBanner(onSetUp: _openSettings),
             Expanded(
-              child: _isLoadingHistory
-                  ? const Center(child: CircularProgressIndicator())
-                  : AnimatedSwitcher(
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: _isLoadingHistory
+                        ? const Center(child: CircularProgressIndicator())
+                        : AnimatedSwitcher(
                       duration: const Duration(milliseconds: 200),
                       switchInCurve: Curves.easeOut,
                       switchOutCurve: Curves.easeIn,
@@ -1179,8 +1342,10 @@ class _ChatScreenState extends State<ChatScreen> {
                               theme: theme,
                               onSuggestionTap: _applySuggestion,
                             )
-                          : ListView.builder(
+                          : NotificationListener<ScrollNotification>(
                               key: ValueKey('list-$_conversationId'),
+                              onNotification: _onListScrollNotification,
+                              child: ListView.builder(
                               controller: _scrollController,
                               physics: const BouncingScrollPhysics(
                                 parent: AlwaysScrollableScrollPhysics(),
@@ -1283,7 +1448,12 @@ class _ChatScreenState extends State<ChatScreen> {
                                 return entrance;
                               },
                             ),
+                            ),
                     ),
+                  ),
+                  _buildJumpToLatestButton(theme),
+                ],
+              ),
             ),
             // Step 22B: wrapped in AnimatedSize so the row's appearance and
             // disappearance is a smooth height animation instead of an
