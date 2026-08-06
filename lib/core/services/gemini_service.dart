@@ -28,6 +28,27 @@ class GeminiInlinePart {
       };
 }
 
+// Step 24: the three stages a batched multi-image send moves through, in
+// order. A caller (e.g. `ChatScreen`) renders these as a single status
+// line so the person always knows what's happening, even though several
+// sequential Gemini requests may be happening behind the scenes.
+enum GeminiBatchStage { uploading, analyzing, generating }
+
+/// A single progress update emitted by [GeminiService.sendMessageWithImages]
+/// as a large image batch send moves through its stages. [currentBatch]
+/// and [totalBatches] are only meaningful during [GeminiBatchStage.analyzing]
+/// (both are `0` otherwise).
+class GeminiBatchProgress {
+  final GeminiBatchStage stage;
+  final int currentBatch;
+  final int totalBatches;
+  const GeminiBatchProgress({
+    required this.stage,
+    this.currentBatch = 0,
+    this.totalBatches = 0,
+  });
+}
+
 /// Thin wrapper around Google's Gemini `generateContent` REST endpoint.
 ///
 /// The API key is entered by the user on the Settings screen and stored
@@ -153,7 +174,18 @@ Tone and formatting:
     // A long-running request (an image/file attachment, or a large prompt
     // such as one carrying extracted PDF text) gets more time before we
     // give up — a plain short text turn should still fail fast.
+    //
+    // Step 23: image attachments specifically get a much longer allowance
+    // (180s) than other "heavy" requests (60s) — analyzing several images
+    // together is the slowest case Gemini handles here, and a shorter
+    // timeout was cutting genuinely-in-progress multi-image requests off
+    // before Gemini could finish.
+    final hasImageAttachment =
+        attachments.any((a) => a.mimeType.startsWith('image/'));
     final isHeavyRequest = attachments.isNotEmpty || prompt.length > 4000;
+    final requestTimeout = hasImageAttachment
+        ? const Duration(seconds: 180)
+        : Duration(seconds: isHeavyRequest ? 60 : 30);
 
     try {
       final response = await http
@@ -173,7 +205,7 @@ Tone and formatting:
               'contents': contents,
             }),
           )
-          .timeout(Duration(seconds: isHeavyRequest ? 60 : 30));
+          .timeout(requestTimeout);
 
       if (response.statusCode == 400 || response.statusCode == 403) {
         final hint = response.statusCode == 400 && attachments.isNotEmpty
@@ -228,13 +260,186 @@ Tone and formatting:
       return text.trim();
     } on TimeoutException {
       throw GeminiException(
-        'Gemini is taking too long to respond. Check your connection and '
-        'try again — large files may need a smaller attachment.',
+        hasImageAttachment
+            ? 'Gemini is taking too long to analyze these images. Check your '
+                'connection and try again with fewer or smaller images.'
+            : 'Gemini is taking too long to respond. Check your connection and '
+                'try again — large files may need a smaller attachment.',
       );
     } on GeminiException {
       rethrow;
     } catch (e) {
       throw GeminiException('Could not reach Gemini: $e');
+    }
+  }
+
+  // Step 24: how many images go into a single `sendMessage` request when
+  // sending through [sendMessageWithImages]. Keeping each request at this
+  // size is what keeps every individual batch fast and reliable — see the
+  // note on `_kMaxImagesPerRequest` in `chat_screen.dart`, which caps the
+  // *total* images a person can attach at once (20) well above this.
+  static const int _kBatchSize = 5;
+
+  /// Sends [prompt] together with [images] to Gemini, automatically
+  /// splitting more than [_kBatchSize] images into sequential batches of
+  /// [_kBatchSize], and merging every batch's reply into one final answer.
+  ///
+  /// This is the entry point [ChatScreen] uses for any send that includes
+  /// one or more image attachments (Step 24 — Smart Large Image Batch
+  /// Processing). [images] must already be compressed — this method makes
+  /// no changes to the bytes themselves, it only groups and paces the
+  /// requests. [otherAttachments] (e.g. a small generic text file sent
+  /// alongside images) always rides along with the first batch only, same
+  /// as before batching existed.
+  ///
+  /// Image order is preserved exactly: images are split into batches in
+  /// the order given, batches are sent one after another (never in
+  /// parallel), and each batch's own images stay in order within it.
+  ///
+  /// If a batch's request fails, it is retried automatically exactly once.
+  /// If it still fails, that batch is skipped and the remaining batches
+  /// continue normally — a single bad/oversized image (or a transient
+  /// network hiccup) never sinks the whole request. Only if *every* batch
+  /// ultimately fails does this throw [GeminiException].
+  ///
+  /// [onProgress], if given, is called as processing moves through each
+  /// stage — uploading, analyzing (once per batch, reporting which batch
+  /// number is in flight), then generating the merged final answer — so
+  /// the caller can show an accurate, professional status line the whole
+  /// time. It is never called for a plain no-image send (when [images] is
+  /// empty), since there's nothing to batch.
+  static Future<String> sendMessageWithImages(
+    String prompt, {
+    List<Map<String, String>> history = const [],
+    required List<GeminiInlinePart> images,
+    List<GeminiInlinePart> otherAttachments = const [],
+    String? modeInstruction,
+    void Function(GeminiBatchProgress progress)? onProgress,
+  }) async {
+    if (images.isEmpty) {
+      return sendMessage(
+        prompt,
+        history: history,
+        attachments: otherAttachments,
+        modeInstruction: modeInstruction,
+      );
+    }
+
+    // Split into fixed-size batches, preserving order.
+    final batches = <List<GeminiInlinePart>>[];
+    for (var start = 0; start < images.length; start += _kBatchSize) {
+      final end = (start + _kBatchSize < images.length)
+          ? start + _kBatchSize
+          : images.length;
+      batches.add(images.sublist(start, end));
+    }
+    final totalBatches = batches.length;
+
+    onProgress?.call(
+      GeminiBatchProgress(
+        stage: GeminiBatchStage.uploading,
+        totalBatches: totalBatches,
+      ),
+    );
+
+    final batchReplies = <String>[];
+    GeminiException? lastFailure;
+
+    for (var i = 0; i < batches.length; i++) {
+      onProgress?.call(
+        GeminiBatchProgress(
+          stage: GeminiBatchStage.analyzing,
+          currentBatch: i + 1,
+          totalBatches: totalBatches,
+        ),
+      );
+
+      // Only the first batch carries any non-image attachment (e.g. a
+      // small text file), and only the first batch is asked to also
+      // account for it — same as the pre-Step-24 single-request behavior.
+      final batchAttachments = [
+        ...batches[i],
+        if (i == 0) ...otherAttachments,
+      ];
+      final batchPrompt = totalBatches > 1
+          ? 'These are images ${i + 1} of $totalBatches batches from a '
+              'single request — analyze only what is visible in this batch. '
+              'Your analysis will be combined with the other batches into '
+              'one final answer, so be thorough and specific about what you '
+              'observe.\n\nUser\'s request: $prompt'
+          : prompt;
+
+      String? reply;
+      for (var attempt = 0; attempt < 2; attempt++) {
+        try {
+          reply = await sendMessage(
+            batchPrompt,
+            history: history,
+            attachments: batchAttachments,
+            modeInstruction: modeInstruction,
+          );
+          break;
+        } on GeminiException catch (e) {
+          lastFailure = e;
+          // First failure: retry this same batch once automatically.
+          // Second failure: fall through and move on to the next batch.
+        }
+      }
+
+      if (reply != null) {
+        batchReplies.add(reply);
+      }
+    }
+
+    if (batchReplies.isEmpty) {
+      throw lastFailure ??
+          GeminiException('Could not analyze any of the images.');
+    }
+
+    if (batchReplies.length == 1) {
+      return batchReplies.first;
+    }
+
+    onProgress?.call(
+      GeminiBatchProgress(
+        stage: GeminiBatchStage.generating,
+        totalBatches: totalBatches,
+      ),
+    );
+
+    final mergePrompt = StringBuffer()
+      ..writeln(
+        'You separately analyzed ${batchReplies.length} batch(es) of '
+        'images that are all part of one request. Here is each batch\'s '
+        'analysis:',
+      );
+    for (var i = 0; i < batchReplies.length; i++) {
+      mergePrompt
+        ..writeln()
+        ..writeln('Batch ${i + 1} analysis:')
+        ..writeln(batchReplies[i]);
+    }
+    mergePrompt
+      ..writeln()
+      ..writeln('User\'s original request: $prompt')
+      ..writeln()
+      ..writeln(
+        'Combine these into ONE clear, well-organized final answer that '
+        'directly addresses the user\'s request, as if you had analyzed '
+        'all the images together in a single pass. Do not mention batches, '
+        'merging, or the analysis process itself.',
+      );
+
+    try {
+      return await sendMessage(
+        mergePrompt.toString(),
+        modeInstruction: modeInstruction,
+      );
+    } on GeminiException {
+      // Merging is a best-effort polish step — if it fails, still return a
+      // useful single answer rather than losing everything already
+      // gathered above.
+      return batchReplies.join('\n\n');
     }
   }
 }

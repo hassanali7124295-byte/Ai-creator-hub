@@ -1,7 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/services.dart';
 import 'package:animate_do/animate_do.dart';
+import 'package:image/image.dart' as img;
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -27,6 +31,59 @@ import 'settings_screen.dart';
 /// listening (animated equalizer, tap again to stop), and processing (a
 /// brief spinner while the final result settles before returning to idle).
 enum _MicState { idle, listening, processing }
+
+// Step 23/24: per-request attachment limits. Images beyond
+// `_kMaxImagesPerRequest` are rejected at pick time; anything at or under
+// it that's still more than `GeminiService._kBatchSize` (5) is
+// automatically split into sequential batches at send time (Step 24 —
+// Smart Large Image Batch Processing) rather than sent in one giant
+// request, which is what keeps large image sets fast and reliable instead
+// of timing out.
+const int _kMaxImagesPerRequest = 20;
+const int _kMaxPdfsPerRequest = 1;
+
+/// Step 23: a second, more aggressive compression pass applied to every
+/// image attachment right before it's sent, on top of whatever
+/// `AttachmentProcessorService` already produced. Multi-image requests
+/// (up to [_kMaxImagesPerRequest] at once) need every image as small as
+/// reasonably possible to upload quickly and keep the UI responsive, so
+/// this shrinks the longest edge further and re-encodes at a lower JPEG
+/// quality, stepping down until a smaller target size is hit — trading a
+/// little more quality for a meaningfully smaller upload than the default
+/// single-attachment pipeline aims for.
+///
+/// Top-level (not a method) so it can run in a background isolate via
+/// `compute` — recompressing several images back-to-back never blocks the
+/// UI thread. Returns `null` if the bytes aren't a decodable image, in
+/// which case the caller falls back to the original bytes.
+Uint8List? _recompressImageAggressively(Uint8List bytes) {
+  final decoded = img.decodeImage(bytes);
+  if (decoded == null) return null;
+
+  img.Image working = decoded;
+  const maxDimension = 1280;
+  final longestEdge =
+      working.width > working.height ? working.width : working.height;
+  if (longestEdge > maxDimension) {
+    working = working.width >= working.height
+        ? img.copyResize(working, width: maxDimension)
+        : img.copyResize(working, height: maxDimension);
+  }
+
+  // Aggressive but still "readable quality" — noticeably smaller than the
+  // ~3 MB target the base attachment pipeline aims for, without dropping
+  // to the point images become blurry or illegible.
+  const targetBytes = 900 * 1024; // ~0.9 MB
+  const qualitySteps = [75, 60, 48, 38];
+  Uint8List? best;
+  for (final quality in qualitySteps) {
+    final encoded = img.encodeJpg(working, quality: quality);
+    best = Uint8List.fromList(encoded);
+    if (best.lengthInBytes <= targetBytes) return best;
+  }
+  // Every step tried; return the smallest (last/lowest-quality) attempt.
+  return best;
+}
 
 /// A picked-but-not-yet-sent attachment, waiting in the input bar.
 /// [previewMeta] is built immediately from the raw pick (for instant UI
@@ -83,6 +140,23 @@ class _ChatScreenState extends State<ChatScreen> {
   // changes again, which is what keeps the input area from jumping.
   final List<_PendingAttachment> _pendingAttachments = [];
   bool _attachmentsLocked = false;
+
+  // Step 23: true only while a send with at least one image attachment is
+  // in flight — drives the status shown in place of the plain typing
+  // indicator (see `_AnalyzingIndicator` below), so the person gets an
+  // accurate, professional sense of what's taking a moment instead of a
+  // generic "typing" dot animation.
+  bool _sendingHasImages = false;
+
+  // Step 24: which stage a large-image-batch send is currently in —
+  // updated live via `GeminiService.sendMessageWithImages`'s `onProgress`
+  // callback so `_AnalyzingIndicator` can show "Uploading images...",
+  // "Analyzing images (Batch X of Y)...", or "Generating final answer..."
+  // as it happens, instead of one static label for the whole wait. Null
+  // whenever `_sendingHasImages` is false.
+  GeminiBatchStage? _sendStage;
+  int _sendBatchCurrent = 0;
+  int _sendBatchTotal = 0;
 
   // Read Aloud (Step 21A): on-device TTS for AI replies, routed entirely
   // through the shared `VoiceManager` singleton so only one message can
@@ -241,12 +315,19 @@ class _ChatScreenState extends State<ChatScreen> {
     final attachmentsToSend = List<_PendingAttachment>.from(_pendingAttachments);
     if ((text.isEmpty && attachmentsToSend.isEmpty) || _isSending) return;
 
+    final hasImages = attachmentsToSend
+        .any((a) => a.previewMeta.kind == ChatAttachmentKind.image);
+
     // Prevent duplicate sends and lock the attachment preview immediately —
     // before any async work — so the row (and the input area around it)
     // does not change shape again until this whole send resolves.
     setState(() {
       _isSending = true;
       _attachmentsLocked = attachmentsToSend.isNotEmpty;
+      _sendingHasImages = hasImages;
+      _sendStage = hasImages ? GeminiBatchStage.uploading : null;
+      _sendBatchCurrent = 0;
+      _sendBatchTotal = 0;
     });
 
     final attachmentMetas = <ChatAttachment>[];
@@ -260,7 +341,18 @@ class _ChatScreenState extends State<ChatScreen> {
           pending.source,
         );
         attachmentMetas.add(processed.metadata);
-        if (processed.part != null) attachmentParts.add(processed.part!);
+        if (processed.part != null) {
+          if (processed.metadata.kind == ChatAttachmentKind.image) {
+            // Step 23: shrink images further, off the UI isolate, before
+            // they go out — keeps multi-image uploads fast without
+            // freezing the chat while several are compressed in a row.
+            attachmentParts.add(
+              await _prepareImagePartForUpload(processed.part!),
+            );
+          } else {
+            attachmentParts.add(processed.part!);
+          }
+        }
         if (processed.extractedText != null) {
           attachmentExtractedTexts.add(processed.extractedText!);
         }
@@ -315,11 +407,33 @@ class _ChatScreenState extends State<ChatScreen> {
           ? '${attachmentExtractedTexts.join('\n\n')}\n\n$outgoingText'
           : outgoingText;
 
-      final reply = await GeminiService.sendMessage(
+      // Step 24: images go through the batching entry point (a no-op
+      // single request when there are 5 or fewer) so more than 5 are
+      // automatically split into sequential batches of 5, retried once
+      // each on failure, and merged into one final answer — everything
+      // else (generic file attachments) rides along with the first batch,
+      // exactly as a single request would have sent it before.
+      final imageParts = attachmentParts
+          .where((p) => p.mimeType.startsWith('image/'))
+          .toList(growable: false);
+      final nonImageParts = attachmentParts
+          .where((p) => !p.mimeType.startsWith('image/'))
+          .toList(growable: false);
+
+      final reply = await GeminiService.sendMessageWithImages(
         geminiPrompt,
         history: history,
-        attachments: attachmentParts,
+        images: imageParts,
+        otherAttachments: nonImageParts,
         modeInstruction: _mode.systemPrompt,
+        onProgress: (progress) {
+          if (!mounted) return;
+          setState(() {
+            _sendStage = progress.stage;
+            _sendBatchCurrent = progress.currentBatch;
+            _sendBatchTotal = progress.totalBatches;
+          });
+        },
       );
 
       if (!mounted) return;
@@ -337,10 +451,40 @@ class _ChatScreenState extends State<ChatScreen> {
       });
       _checkApiKey();
     } finally {
-      if (mounted) setState(() => _isSending = false);
+      if (mounted) {
+        setState(() {
+          _isSending = false;
+          _sendingHasImages = false;
+          _sendStage = null;
+          _sendBatchCurrent = 0;
+          _sendBatchTotal = 0;
+        });
+      }
       _scrollToBottom();
       unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
     }
+  }
+
+  /// Step 23: runs [_recompressImageAggressively] on [part]'s bytes in a
+  /// background isolate and returns a new, smaller [GeminiInlinePart] —
+  /// or [part] unchanged if recompression fails or doesn't actually shrink
+  /// it (e.g. a tiny image that's already well under the target size).
+  static Future<GeminiInlinePart> _prepareImagePartForUpload(
+    GeminiInlinePart part,
+  ) async {
+    try {
+      final rawBytes = base64Decode(part.base64Data);
+      final recompressed = await compute(_recompressImageAggressively, rawBytes);
+      if (recompressed != null && recompressed.lengthInBytes < rawBytes.lengthInBytes) {
+        return GeminiInlinePart(
+          mimeType: part.mimeType,
+          base64Data: base64Encode(recompressed),
+        );
+      }
+    } catch (_) {
+      // Best-effort only — fall through to the original part below.
+    }
+    return part;
   }
 
   /// Surfaces an attachment processing failure as an inline error bubble,
@@ -354,6 +498,10 @@ class _ChatScreenState extends State<ChatScreen> {
       // Unlock so the person can remove the offending attachment (or any
       // other) and try again — they're still pending, never lost.
       _attachmentsLocked = false;
+      _sendingHasImages = false;
+      _sendStage = null;
+      _sendBatchCurrent = 0;
+      _sendBatchTotal = 0;
     });
     _scrollToBottom();
   }
@@ -520,6 +668,24 @@ class _ChatScreenState extends State<ChatScreen> {
 
       final existingPaths =
           _pendingAttachments.map((p) => p.result.path).toSet();
+      final existingImageCount = _pendingAttachments
+          .where((p) => p.previewMeta.kind == ChatAttachmentKind.image)
+          .length;
+      final existingPdfCount = _pendingAttachments
+          .where((p) => p.previewMeta.kind == ChatAttachmentKind.pdf)
+          .length;
+
+      // Step 23: cap a single request at `_kMaxImagesPerRequest` images
+      // and `_kMaxPdfsPerRequest` PDF(s). Counted independently — an
+      // image-and-PDF request can still mix both, just each within its
+      // own limit — and enforced here, at pick time, rather than at send
+      // time, so the person sees the row (and the warning) immediately
+      // instead of the send silently dropping something later.
+      var acceptedImages = existingImageCount;
+      var acceptedPdfs = existingPdfCount;
+      var imageLimitHit = false;
+      var pdfLimitHit = false;
+
       final additions = <_PendingAttachment>[];
       for (final result in results) {
         // Prevent duplicate attachments — both within this pick (e.g. the
@@ -529,6 +695,21 @@ class _ChatScreenState extends State<ChatScreen> {
 
         final mimeType = AttachmentProcessorService.detectMimeType(result.path);
         final kind = AttachmentProcessorService.classify(type, mimeType);
+
+        if (kind == ChatAttachmentKind.image) {
+          if (acceptedImages >= _kMaxImagesPerRequest) {
+            imageLimitHit = true;
+            continue;
+          }
+          acceptedImages++;
+        } else if (kind == ChatAttachmentKind.pdf) {
+          if (acceptedPdfs >= _kMaxPdfsPerRequest) {
+            pdfLimitHit = true;
+            continue;
+          }
+          acceptedPdfs++;
+        }
+
         additions.add(_PendingAttachment(
           result: result,
           source: type,
@@ -542,12 +723,30 @@ class _ChatScreenState extends State<ChatScreen> {
         ));
       }
 
-      if (additions.isEmpty) return;
-      setState(() {
-        // Appending — never replacing — is what preserves selection order
-        // across multiple trips through the attachment sheet.
-        _pendingAttachments.addAll(additions);
-      });
+      if (additions.isNotEmpty) {
+        setState(() {
+          // Appending — never replacing — is what preserves selection
+          // order across multiple trips through the attachment sheet.
+          _pendingAttachments.addAll(additions);
+        });
+      }
+
+      if (!mounted) return;
+      if (imageLimitHit) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Maximum 20 images allowed per request.'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      } else if (pdfLimitHit) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Only 1 PDF allowed per request.'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -780,7 +979,18 @@ class _ChatScreenState extends State<ChatScreen> {
                                   _messages.length + (_isSending ? 1 : 0),
                               itemBuilder: (context, index) {
                                 if (index == _messages.length) {
-                                  return const TypingIndicator();
+                                  // Step 23: while analyzing image
+                                  // attachments specifically, swap the
+                                  // generic typing dots for a status line
+                                  // that sets accurate expectations for the
+                                  // longer image-analysis wait.
+                                  return _sendingHasImages
+                                      ? _AnalyzingIndicator(
+                                          stage: _sendStage,
+                                          currentBatch: _sendBatchCurrent,
+                                          totalBatches: _sendBatchTotal,
+                                        )
+                                      : const TypingIndicator();
                                 }
                                 final message = _messages[index];
                                 final isAiReply =
@@ -890,6 +1100,69 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Step 23/24: shown in place of the plain [TypingIndicator] while a send
+/// with image attachments is in flight — the same pulsing dots, plus a
+/// short status line, so waiting on a multi-image analysis (which can
+/// legitimately take a while — see the 180s image timeout in
+/// `GeminiService`) reads as "working on it" rather than looking stuck.
+///
+/// Step 24: the status line now tracks [stage] live as a large image set
+/// moves through uploading → analyzing (one or more batches) →
+/// generating the merged final answer, instead of one static label for
+/// the whole wait — see `GeminiService.sendMessageWithImages`'s
+/// `onProgress` callback, which is what drives these values.
+class _AnalyzingIndicator extends StatelessWidget {
+  final GeminiBatchStage? stage;
+  final int currentBatch;
+  final int totalBatches;
+
+  const _AnalyzingIndicator({
+    this.stage,
+    this.currentBatch = 0,
+    this.totalBatches = 0,
+  });
+
+  String get _label {
+    switch (stage) {
+      case GeminiBatchStage.uploading:
+        return 'Uploading images...';
+      case GeminiBatchStage.analyzing:
+        return totalBatches > 1
+            ? 'Analyzing images (Batch $currentBatch of $totalBatches)...'
+            : 'Analyzing images...';
+      case GeminiBatchStage.generating:
+        return 'Generating final answer...';
+      case null:
+        return 'Analyzing images...';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const TypingIndicator(),
+          Padding(
+            padding: const EdgeInsets.only(left: 2, top: 2),
+            child: Text(
+              _label,
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
