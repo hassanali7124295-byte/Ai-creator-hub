@@ -1,11 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
-import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/services.dart';
 import 'package:animate_do/animate_do.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:image/image.dart' as img;
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -26,7 +26,6 @@ import '../widgets/attachment_sheet.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/conversation_drawer.dart';
 import '../widgets/typing_indicator.dart';
-import 'profile_screen.dart';
 import 'settings_screen.dart';
 
 /// Step 18.5: the mic button's three states — idle (normal mic icon),
@@ -44,6 +43,16 @@ enum _MicState { idle, listening, processing }
 // reliable instead of timing out.
 const int _kMaxImagesPerRequest = 20;
 const int _kMaxPdfsPerRequest = 1;
+
+// Step 27: Premium Home Screen Redesign — brand palette used only by the
+// redesigned chrome (app bar, empty/home state, model-select pill, and the
+// message composer). Deliberately a local constant rather than a
+// `ChatPalette` seed change: the message bubbles/list keep using the
+// existing emerald `ChatPalette` theme untouched, while every screen-level
+// "shell" surface around them now matches the approved design reference
+// exactly (#0B6B43 dark green, white surfaces).
+const Color _kPakGreen = Color(0xFF0B6B43);
+const Color _kPakGreenSoft = Color(0xFFEAF3EE); // faint tint for outlines/chips
 
 /// Step 23: a second, more aggressive compression pass applied to every
 /// image attachment right before it's sent, on top of whatever
@@ -129,10 +138,6 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _inputController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final List<ChatMessage> _messages = [];
-  // Step 27A: owned here (instead of inside `_ChatInputBar`) so the
-  // premium home screen's search card can hand focus straight to the
-  // real composer below it — purely a UI convenience, no send-path change.
-  final FocusNode _composerFocusNode = FocusNode();
 
   bool _isSending = false;
   bool _isLoadingHistory = true;
@@ -340,7 +345,6 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     _inputController.dispose();
-    _composerFocusNode.dispose();
     _scrollController.removeListener(_onScrollChanged);
     _scrollController.dispose();
     VoiceManager.instance.removeListener(_onVoiceStateChanged);
@@ -1156,7 +1160,6 @@ class _ChatScreenState extends State<ChatScreen> {
     _inputController.text = text;
     _inputController.selection =
         TextSelection.collapsed(offset: text.length);
-    _composerFocusNode.requestFocus();
   }
 
   /// Opens the AI Modes sheet and applies the chosen mode, if any, to the
@@ -1269,24 +1272,77 @@ class _ChatScreenState extends State<ChatScreen> {
       (p) => p.current?.title ?? 'AI Chat',
     );
 
-    // Step 27A: "Home" is the empty-conversation landing state — it gets
-    // the new premium top bar (logo + crescent mark + avatar + settings).
-    // The moment a conversation has messages, the original functional
-    // chat app bar (live title, new chat, clear chat) takes back over,
-    // completely unchanged.
     final isHome = _messages.isEmpty && !_isLoadingHistory;
 
     return Theme(
       data: theme,
       child: Scaffold(
+        // Step 27: premium redesign calls for a clean white shell —
+        // message bubbles further down still render with their own
+        // `ChatPalette` colors, unaffected.
+        backgroundColor: Colors.white,
         drawer: ConversationDrawer(
           currentId: _conversationId,
           onSelect: _switchConversation,
           onNewChat: _startNewChat,
         ),
-        appBar: isHome
-            ? _buildHomeAppBar(theme)
-            : _buildChatAppBar(theme, conversationTitle),
+        appBar: AppBar(
+          backgroundColor: Colors.white,
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          leadingWidth: 56,
+          scrolledUnderElevation: 0,
+          leading: Builder(
+            builder: (context) => Center(
+              child: _AppBarIconButton(
+                tooltip: 'Menu',
+                icon: Icons.menu_rounded,
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  Scaffold.of(context).openDrawer();
+                },
+              ),
+            ),
+          ),
+          titleSpacing: 4,
+          // Home state shows the "Pak AI" brand mark (logo + crescent), as
+          // in the reference design; once a conversation has messages the
+          // bar reverts to showing that conversation's title, exactly as
+          // before — chat logic/behavior is unchanged, only the chrome's
+          // look.
+          title: isHome
+              ? const _PakAiBrandMark()
+              : Text(
+                  _isLoadingHistory ? 'AI Chat' : conversationTitle,
+                  style: GoogleFonts.playfairDisplay(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 19,
+                    letterSpacing: -0.2,
+                    color: _kPakGreen,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+          actions: [
+            // Step 27: a single action button on the right, matching the
+            // reference — "New chat". Long-press keeps the pre-existing
+            // "Clear chat" action reachable without a second visible icon.
+            _AppBarIconButton(
+              tooltip: 'New chat',
+              icon: Icons.mode_edit_outline_rounded,
+              onTap: () {
+                HapticFeedback.selectionClick();
+                _startNewChat();
+              },
+              onLongPress: _messages.isNotEmpty
+                  ? () {
+                      HapticFeedback.mediumImpact();
+                      _clearChat();
+                    }
+                  : null,
+            ),
+            const SizedBox(width: 6),
+          ],
+        ),
         body: Column(
           children: [
             if (!_hasApiKey) _ApiKeyBanner(onSetUp: _openSettings),
@@ -1301,13 +1357,10 @@ class _ChatScreenState extends State<ChatScreen> {
                       switchInCurve: Curves.easeOut,
                       switchOutCurve: Curves.easeIn,
                       child: _messages.isEmpty
-                          ? _PremiumHomeContent(
+                          ? _EmptyState(
                               key: ValueKey('empty-$_conversationId'),
                               theme: theme,
                               onSuggestionTap: _applySuggestion,
-                              onComposerTap: _composerFocusNode.requestFocus,
-                              onVoiceTap: _onVoiceTap,
-                              onAttachmentTap: _openAttachmentSheet,
                             )
                           : NotificationListener<ScrollNotification>(
                               key: ValueKey('list-$_conversationId'),
@@ -1447,7 +1500,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+              padding: const EdgeInsets.fromLTRB(16, 8, 12, 2),
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: _ModePill(mode: _mode, onTap: _pickMode),
@@ -1455,7 +1508,6 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             _ChatInputBar(
               controller: _inputController,
-              focusNode: _composerFocusNode,
               isSending: _isSending,
               isStreaming: _isStreaming,
               onSend: _sendMessage,
@@ -1467,160 +1519,6 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
       ),
-    );
-  }
-
-  /// The original functional chat header — live conversation title, new
-  /// chat, clear chat. Untouched by Step 27A; only shown once a
-  /// conversation has messages.
-  PreferredSizeWidget _buildChatAppBar(ThemeData theme, String conversationTitle) {
-    return AppBar(
-      leadingWidth: 56,
-      scrolledUnderElevation: 0,
-      leading: Builder(
-        builder: (context) => Center(
-          child: _AppBarIconButton(
-            tooltip: 'Menu',
-            icon: Icons.menu_rounded,
-            onTap: () {
-              HapticFeedback.selectionClick();
-              Scaffold.of(context).openDrawer();
-            },
-          ),
-        ),
-      ),
-      titleSpacing: 4,
-      title: Text(
-        _isLoadingHistory ? 'AI Chat' : conversationTitle,
-        style: theme.textTheme.titleMedium?.copyWith(
-          fontWeight: FontWeight.w600,
-          letterSpacing: -0.2,
-        ),
-        overflow: TextOverflow.ellipsis,
-      ),
-      actions: [
-        _AppBarIconButton(
-          tooltip: 'New chat',
-          icon: Icons.mode_edit_outline_rounded,
-          onTap: () {
-            HapticFeedback.selectionClick();
-            _startNewChat();
-          },
-        ),
-        AnimatedSwitcher(
-          duration: const Duration(milliseconds: 200),
-          transitionBuilder: (child, animation) => ScaleTransition(
-            scale: animation,
-            child: FadeTransition(opacity: animation, child: child),
-          ),
-          child: _messages.isNotEmpty
-              ? _AppBarIconButton(
-                  key: const ValueKey('clear-chat'),
-                  tooltip: 'Clear chat',
-                  icon: Icons.delete_outline_rounded,
-                  onTap: () {
-                    HapticFeedback.mediumImpact();
-                    _clearChat();
-                  },
-                )
-              : const SizedBox(width: 12, key: ValueKey('clear-chat-empty')),
-        ),
-        const SizedBox(width: 6),
-      ],
-    );
-  }
-
-  /// Step 27A: the premium home top bar — drawer, "Pak AI" wordmark with a
-  /// small crescent mark, profile avatar, and settings — shown only on the
-  /// empty-conversation landing state. Every action here re-uses an
-  /// existing, already-wired handler (`Scaffold.openDrawer`, `_openSettings`,
-  /// the `ProfileScreen` route already used by the drawer) — no new
-  /// navigation or business logic.
-  PreferredSizeWidget _buildHomeAppBar(ThemeData theme) {
-    return AppBar(
-      leadingWidth: 56,
-      scrolledUnderElevation: 0,
-      leading: Builder(
-        builder: (context) => Center(
-          child: _AppBarIconButton(
-            tooltip: 'Menu',
-            icon: Icons.menu_rounded,
-            onTap: () {
-              HapticFeedback.selectionClick();
-              Scaffold.of(context).openDrawer();
-            },
-          ),
-        ),
-      ),
-      titleSpacing: 4,
-      title: FadeIn(
-        duration: const Duration(milliseconds: 300),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 30,
-              height: 30,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    theme.colorScheme.primary,
-                    const Color(0xFF066B47),
-                  ],
-                ),
-              ),
-              child: const Icon(Icons.auto_awesome_rounded,
-                  size: 16, color: Colors.white),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              'Pak AI',
-              style: theme.textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w700,
-                letterSpacing: -0.2,
-              ),
-            ),
-            const SizedBox(width: 5),
-            Icon(
-              Icons.nightlight_round,
-              size: 13,
-              color: theme.colorScheme.primary.withOpacity(0.65),
-            ),
-          ],
-        ),
-      ),
-      actions: [
-        Tooltip(
-          message: 'Profile',
-          child: InkWell(
-            borderRadius: BorderRadius.circular(20),
-            onTap: () {
-              HapticFeedback.selectionClick();
-              Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const ProfileScreen()),
-              );
-            },
-            child: CircleAvatar(
-              radius: 16,
-              backgroundColor: theme.colorScheme.primary.withOpacity(0.12),
-              child: Icon(Icons.person_rounded,
-                  size: 18, color: theme.colorScheme.primary),
-            ),
-          ),
-        ),
-        _AppBarIconButton(
-          tooltip: 'Settings',
-          icon: Icons.settings_outlined,
-          onTap: () {
-            HapticFeedback.selectionClick();
-            _openSettings();
-          },
-        ),
-        const SizedBox(width: 6),
-      ],
     );
   }
 }
@@ -1701,34 +1599,37 @@ class _ModePill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    // Step 27: restyled as a solid dark-green pill sitting directly above
+    // the composer — reads as part of the same input group, per the
+    // reference design, rather than a separate themed chip.
     return Material(
-      color: theme.colorScheme.primaryContainer.withOpacity(0.5),
-      borderRadius: BorderRadius.circular(20),
+      color: _kPakGreen,
+      borderRadius: BorderRadius.circular(24),
       child: InkWell(
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(24),
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(mode.emoji, style: const TextStyle(fontSize: 15)),
-              const SizedBox(width: 6),
-              Text(
+              const SizedBox(width: 7),
+              const Text(
                 'Select Model',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.labelMedium?.copyWith(
+                style: TextStyle(
                   fontWeight: FontWeight.w600,
-                  color: theme.colorScheme.onPrimaryContainer,
+                  fontSize: 13.5,
+                  color: Colors.white,
                 ),
               ),
               const SizedBox(width: 2),
-              Icon(
+              const Icon(
                 Icons.expand_more_rounded,
                 size: 16,
-                color: theme.colorScheme.onPrimaryContainer.withOpacity(0.8),
+                color: Colors.white,
               ),
             ],
           ),
@@ -1746,12 +1647,14 @@ class _AppBarIconButton extends StatefulWidget {
   final IconData icon;
   final String tooltip;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
 
   const _AppBarIconButton({
     super.key,
     required this.icon,
     required this.tooltip,
     required this.onTap,
+    this.onLongPress,
   });
 
   @override
@@ -1767,7 +1670,9 @@ class _AppBarIconButtonState extends State<_AppBarIconButton> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    // Step 27: restyled as a soft rounded-square chip on white — a faint
+    // green-tinted fill with a thin outline, matching the reference app
+    // bar's minimal icon buttons.
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 3),
       child: Tooltip(
@@ -1781,17 +1686,25 @@ class _AppBarIconButtonState extends State<_AppBarIconButton> {
             duration: const Duration(milliseconds: 120),
             curve: Curves.easeOut,
             child: Material(
-              color: theme.colorScheme.surfaceContainerHigh.withOpacity(0.7),
+              color: _kPakGreenSoft,
               borderRadius: BorderRadius.circular(14),
               child: InkWell(
                 borderRadius: BorderRadius.circular(14),
                 onTap: widget.onTap,
-                child: Padding(
+                onLongPress: widget.onLongPress,
+                child: Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: _kPakGreen.withOpacity(0.14),
+                      width: 1,
+                    ),
+                  ),
                   padding: const EdgeInsets.all(9),
                   child: Icon(
                     widget.icon,
                     size: 21,
-                    color: theme.colorScheme.onSurfaceVariant,
+                    color: _kPakGreen,
                   ),
                 ),
               ),
@@ -1799,6 +1712,37 @@ class _AppBarIconButtonState extends State<_AppBarIconButton> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// "Pak AI" wordmark + crescent, shown in the app bar on the home state —
+/// an elegant serif logotype paired with a small dark-green crescent moon,
+/// matching the reference design exactly.
+class _PakAiBrandMark extends StatelessWidget {
+  const _PakAiBrandMark();
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          'Pak AI',
+          style: GoogleFonts.playfairDisplay(
+            fontWeight: FontWeight.w700,
+            fontSize: 24,
+            letterSpacing: -0.3,
+            color: _kPakGreen,
+          ),
+        ),
+        const SizedBox(width: 6),
+        const Icon(
+          Icons.nightlight_round,
+          size: 22,
+          color: _kPakGreen,
+        ),
+      ],
     );
   }
 }
@@ -1812,22 +1756,23 @@ class _ApiKeyBanner extends StatelessWidget {
     final theme = Theme.of(context);
     return Container(
       width: double.infinity,
-      color: theme.colorScheme.primaryContainer,
+      color: _kPakGreenSoft,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       child: Row(
         children: [
-          Icon(Icons.key_rounded, size: 18, color: theme.colorScheme.onPrimaryContainer),
+          const Icon(Icons.key_rounded, size: 18, color: _kPakGreen),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               'Add your Gemini API key to start chatting.',
               style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onPrimaryContainer,
+                color: _kPakGreen,
               ),
             ),
           ),
           TextButton(
             onPressed: onSetUp,
+            style: TextButton.styleFrom(foregroundColor: _kPakGreen),
             child: const Text('Set up'),
           ),
         ],
@@ -1836,52 +1781,21 @@ class _ApiKeyBanner extends StatelessWidget {
   }
 }
 
-/// Step 27A — Premium Home Screen (UI only).
+/// Step 27 — Premium Home Screen Redesign.
 ///
-/// Replaces the old plain "empty chat" welcome view with a full landing
-/// screen: time-aware greeting, a tappable "search card" that hands off
-/// to the real composer below, and a 2-column grid of quick-action cards
-/// that pre-fill a prompt into that same composer. Nothing here sends a
-/// message, calls the API, or touches routing — every action bottoms out
-/// in an existing, already-wired callback (`onSuggestionTap` /
-/// `_applySuggestion`, `onVoiceTap` / `_onVoiceTap`, `onAttachmentTap` /
-/// `_openAttachmentSheet`).
-class _PremiumHomeContent extends StatelessWidget {
+/// The empty/home state: a time-of-day greeting in an elegant serif, a
+/// short supporting line, a "Fast • Private • Intelligent" tagline, and
+/// four floating rounded quick-action cards over a faint Pakistan-map
+/// watermark — matching the approved design reference. Pure presentation:
+/// [onSuggestionTap] still just fills the composer exactly as before, so
+/// sending, streaming, and every other piece of chat logic is untouched.
+class _EmptyState extends StatelessWidget {
   final ThemeData theme;
   final ValueChanged<String> onSuggestionTap;
-  final VoidCallback onComposerTap;
-  final VoidCallback onVoiceTap;
-  final VoidCallback onAttachmentTap;
 
-  const _PremiumHomeContent({
-    super.key,
-    required this.theme,
-    required this.onSuggestionTap,
-    required this.onComposerTap,
-    required this.onVoiceTap,
-    required this.onAttachmentTap,
-  });
+  const _EmptyState({super.key, required this.theme, required this.onSuggestionTap});
 
-  static const List<_QuickAction> _actions = [
-    _QuickAction('Ask Question', Icons.chat_bubble_outline_rounded,
-        'I have a question about '),
-    _QuickAction('Brainstorm', Icons.lightbulb_outline_rounded,
-        'Help me brainstorm ideas for '),
-    _QuickAction('Write Script', Icons.movie_creation_outlined,
-        'Write a script about '),
-    _QuickAction('Explain Image', Icons.image_outlined,
-        'Explain what is happening in this image'),
-    _QuickAction('Summarize PDF', Icons.picture_as_pdf_outlined,
-        'Summarize this PDF for me'),
-    _QuickAction(
-        'Translate', Icons.translate_rounded, 'Translate this into '),
-    _QuickAction('Generate Code', Icons.code_rounded,
-        'Write code that '),
-    _QuickAction(
-        'Math Solver', Icons.functions_rounded, 'Help me solve this problem: '),
-    _QuickAction('Study Helper', Icons.school_outlined,
-        'Help me study '),
-  ];
+  static const Color _ink = Color(0xFF13251C);
 
   String get _greeting {
     final hour = DateTime.now().hour;
@@ -1894,111 +1808,120 @@ class _PremiumHomeContent extends StatelessWidget {
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        // Very faint background watermark — a soft, oversized map glyph
-        // sitting behind everything at ~5% opacity. Purely decorative.
-        Positioned(
-          right: -60,
-          bottom: -40,
-          child: Opacity(
-            opacity: 0.05,
-            child: Icon(
-              Icons.map_rounded,
-              size: 340,
-              color: theme.colorScheme.primary,
+        // Very low-opacity Pakistan outline watermark, anchored toward
+        // the lower half of the screen behind the quick-action cards.
+        Positioned.fill(
+          child: IgnorePointer(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 220),
+              child: Opacity(
+                opacity: 0.055,
+                child: CustomPaint(
+                  size: Size.infinite,
+                  painter: _PakistanMapPainter(color: _kPakGreen),
+                ),
+              ),
             ),
           ),
         ),
-        SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(22, 20, 22, 24),
-          physics: const BouncingScrollPhysics(
-            parent: AlwaysScrollableScrollPhysics(),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              FadeInUp(
-                duration: const Duration(milliseconds: 420),
-                child: Text(
-                  '$_greeting 👋',
-                  style: theme.textTheme.headlineMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: -0.6,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 6),
-              FadeInUp(
-                duration: const Duration(milliseconds: 420),
-                delay: const Duration(milliseconds: 60),
-                child: Text(
-                  'How can Pak AI help you today?',
-                  style: theme.textTheme.bodyLarge?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              FadeInUp(
-                duration: const Duration(milliseconds: 420),
-                delay: const Duration(milliseconds: 100),
-                child: Text(
-                  'Fast  •  Private  •  Intelligent',
-                  style: theme.textTheme.labelMedium?.copyWith(
-                    color: theme.colorScheme.primary,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.2,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 26),
-              FadeInUp(
-                duration: const Duration(milliseconds: 460),
-                delay: const Duration(milliseconds: 140),
-                child: _HomeSearchCard(
-                  theme: theme,
-                  onTap: onComposerTap,
-                  onVoiceTap: onVoiceTap,
-                  onCameraTap: onAttachmentTap,
-                  onUploadTap: onAttachmentTap,
-                ),
-              ),
-              const SizedBox(height: 28),
-              FadeInUp(
-                duration: const Duration(milliseconds: 460),
-                delay: const Duration(milliseconds: 180),
-                child: Text(
-                  'Quick actions',
-                  style: theme.textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: -0.1,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              GridView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: _actions.length,
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2,
-                  mainAxisSpacing: 12,
-                  crossAxisSpacing: 12,
-                  childAspectRatio: 2.5,
-                ),
-                itemBuilder: (context, index) {
-                  final action = _actions[index];
-                  return FadeInUp(
-                    duration: const Duration(milliseconds: 420),
-                    delay: Duration(milliseconds: 40 * index),
-                    child: _QuickActionCard(
-                      theme: theme,
-                      action: action,
-                      onTap: () => onSuggestionTap(action.prompt),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(24, 28, 24, 24),
+          child: Align(
+            alignment: Alignment.topLeft,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FadeInUp(
+                  duration: const Duration(milliseconds: 420),
+                  child: Text(
+                    '$_greeting 👋',
+                    style: GoogleFonts.playfairDisplay(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 32,
+                      height: 1.15,
+                      letterSpacing: -0.4,
+                      color: _ink,
                     ),
-                  );
-                },
-              ),
-            ],
+                  ),
+                ),
+                const SizedBox(height: 10),
+                FadeInUp(
+                  duration: const Duration(milliseconds: 420),
+                  delay: const Duration(milliseconds: 60),
+                  child: Text(
+                    'How can Pak AI help you today?',
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: _ink.withOpacity(0.62),
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                FadeInUp(
+                  duration: const Duration(milliseconds: 420),
+                  delay: const Duration(milliseconds: 100),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: const [
+                      _TaglineWord('Fast'),
+                      _TaglineDot(),
+                      _TaglineWord('Private'),
+                      _TaglineDot(),
+                      _TaglineWord('Intelligent'),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 40),
+                // Row 1 — full-width "Ask a question".
+                FadeInUp(
+                  duration: const Duration(milliseconds: 420),
+                  delay: const Duration(milliseconds: 140),
+                  child: _QuickActionCard(
+                    label: 'Ask a question',
+                    icon: Icons.chat_bubble_outline_rounded,
+                    onTap: () => onSuggestionTap('Ask a question'),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                // Row 2 — two side-by-side cards.
+                FadeInUp(
+                  duration: const Duration(milliseconds: 420),
+                  delay: const Duration(milliseconds: 180),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: _QuickActionCard(
+                          label: 'Brainstorm ideas',
+                          icon: Icons.lightbulb_outline_rounded,
+                          onTap: () => onSuggestionTap('Brainstorm ideas'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _QuickActionCard(
+                          label: 'Write a script',
+                          icon: Icons.edit_outlined,
+                          onTap: () => onSuggestionTap('Write a script'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                // Row 3 — full-width "Summarize a file".
+                FadeInUp(
+                  duration: const Duration(milliseconds: 420),
+                  delay: const Duration(milliseconds: 220),
+                  child: _QuickActionCard(
+                    label: 'Summarize a file',
+                    icon: Icons.description_outlined,
+                    onTap: () => onSuggestionTap('Summarize a file'),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ],
@@ -2006,193 +1929,55 @@ class _PremiumHomeContent extends StatelessWidget {
   }
 }
 
-class _QuickAction {
-  final String label;
-  final IconData icon;
-  final String prompt;
-  const _QuickAction(this.label, this.icon, this.prompt);
-}
-
-/// The large rounded "Ask anything..." card. Tapping the body (or the
-/// hint text) just hands focus to the real composer at the bottom of the
-/// screen; the three bottom-row icons re-use the same voice/attachment
-/// handlers already wired to the composer, so behavior is identical no
-/// matter which entry point the person taps.
-class _HomeSearchCard extends StatefulWidget {
-  final ThemeData theme;
-  final VoidCallback onTap;
-  final VoidCallback onVoiceTap;
-  final VoidCallback onCameraTap;
-  final VoidCallback onUploadTap;
-
-  const _HomeSearchCard({
-    required this.theme,
-    required this.onTap,
-    required this.onVoiceTap,
-    required this.onCameraTap,
-    required this.onUploadTap,
-  });
-
-  @override
-  State<_HomeSearchCard> createState() => _HomeSearchCardState();
-}
-
-class _HomeSearchCardState extends State<_HomeSearchCard> {
-  bool _pressed = false;
-
-  void _setPressed(bool value) {
-    if (_pressed != value) setState(() => _pressed = value);
-  }
+class _TaglineWord extends StatelessWidget {
+  final String text;
+  const _TaglineWord(this.text);
 
   @override
   Widget build(BuildContext context) {
-    final theme = widget.theme;
-    final isDark = theme.brightness == Brightness.dark;
-    return GestureDetector(
-      onTapDown: (_) => _setPressed(true),
-      onTapCancel: () => _setPressed(false),
-      onTapUp: (_) => _setPressed(false),
-      onTap: () {
-        HapticFeedback.selectionClick();
-        widget.onTap();
-      },
-      child: AnimatedScale(
-        scale: _pressed ? 0.985 : 1.0,
-        duration: const Duration(milliseconds: 120),
-        curve: Curves.easeOut,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(26),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-            child: Container(
-              padding: const EdgeInsets.fromLTRB(18, 16, 14, 12),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surfaceContainerHigh
-                    .withOpacity(isDark ? 0.55 : 0.72),
-                borderRadius: BorderRadius.circular(26),
-                border: Border.all(
-                  color: Colors.white.withOpacity(isDark ? 0.06 : 0.5),
-                  width: 1.2,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: theme.colorScheme.shadow.withOpacity(0.08),
-                    blurRadius: 24,
-                    offset: const Offset(0, 10),
-                  ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(Icons.search_rounded,
-                          color: theme.colorScheme.onSurfaceVariant, size: 22),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          'Ask anything...',
-                          style: theme.textTheme.bodyLarge?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant
-                                .withOpacity(0.8),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 14),
-                  Divider(
-                    height: 1,
-                    color: theme.colorScheme.outlineVariant.withOpacity(0.4),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      _SearchCardIcon(
-                        icon: Icons.mic_none_rounded,
-                        label: 'Voice',
-                        theme: theme,
-                        onTap: widget.onVoiceTap,
-                      ),
-                      _SearchCardIcon(
-                        icon: Icons.photo_camera_outlined,
-                        label: 'Camera',
-                        theme: theme,
-                        onTap: widget.onCameraTap,
-                      ),
-                      _SearchCardIcon(
-                        icon: Icons.upload_file_outlined,
-                        label: 'Upload',
-                        theme: theme,
-                        onTap: widget.onUploadTap,
-                        isLast: true,
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
+    return Text(
+      text,
+      style: TextStyle(
+        fontSize: 13,
+        fontWeight: FontWeight.w600,
+        letterSpacing: 0.2,
+        color: _kPakGreen.withOpacity(0.85),
       ),
     );
   }
 }
 
-class _SearchCardIcon extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final ThemeData theme;
-  final VoidCallback onTap;
-  final bool isLast;
-
-  const _SearchCardIcon({
-    required this.icon,
-    required this.label,
-    required this.theme,
-    required this.onTap,
-    this.isLast = false,
-  });
+class _TaglineDot extends StatelessWidget {
+  const _TaglineDot();
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: EdgeInsets.only(left: isLast ? 6 : 0, right: isLast ? 0 : 6),
-      child: Tooltip(
-        message: label,
-        child: Material(
-          color: theme.colorScheme.primary.withOpacity(0.10),
-          shape: const CircleBorder(),
-          child: InkWell(
-            customBorder: const CircleBorder(),
-            onTap: () {
-              HapticFeedback.selectionClick();
-              onTap();
-            },
-            child: Padding(
-              padding: const EdgeInsets.all(9),
-              child: Icon(icon, size: 19, color: theme.colorScheme.primary),
-            ),
-          ),
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      child: Container(
+        width: 3,
+        height: 3,
+        decoration: BoxDecoration(
+          color: _kPakGreen.withOpacity(0.5),
+          shape: BoxShape.circle,
         ),
       ),
     );
   }
 }
 
-/// One glassy 2-column quick-action card in the grid — icon + label,
-/// tapping it just pre-fills the composer via [onTap] (wired to
-/// `_applySuggestion`/`onSuggestionTap` from the parent).
+/// A floating rounded quick-action card — white fill, soft shadow, a
+/// small outline icon, and a label — matching the reference design's
+/// premium action buttons. Replaces the old flat outlined suggestion
+/// chips.
 class _QuickActionCard extends StatefulWidget {
-  final ThemeData theme;
-  final _QuickAction action;
+  final String label;
+  final IconData icon;
   final VoidCallback onTap;
 
   const _QuickActionCard({
-    required this.theme,
-    required this.action,
+    required this.label,
+    required this.icon,
     required this.onTap,
   });
 
@@ -2209,56 +1994,53 @@ class _QuickActionCardState extends State<_QuickActionCard> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = widget.theme;
-    final isDark = theme.brightness == Brightness.dark;
     return GestureDetector(
       onTapDown: (_) => _setPressed(true),
       onTapCancel: () => _setPressed(false),
       onTapUp: (_) => _setPressed(false),
       child: AnimatedScale(
-        scale: _pressed ? 0.95 : 1.0,
+        scale: _pressed ? 0.97 : 1.0,
         duration: const Duration(milliseconds: 120),
         curve: Curves.easeOut,
         child: Material(
-          color: theme.colorScheme.surfaceContainerHigh
-              .withOpacity(isDark ? 0.55 : 0.85),
-          borderRadius: BorderRadius.circular(22),
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(18),
           child: InkWell(
-            borderRadius: BorderRadius.circular(22),
+            borderRadius: BorderRadius.circular(18),
             onTap: () {
               HapticFeedback.selectionClick();
               widget.onTap();
             },
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(22),
+                borderRadius: BorderRadius.circular(18),
                 border: Border.all(
-                  color: Colors.white.withOpacity(isDark ? 0.05 : 0.5),
+                  color: const Color(0xFFE7EEEA),
                   width: 1,
                 ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.06),
+                    blurRadius: 16,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
               ),
               child: Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Container(
-                    width: 34,
-                    height: 34,
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.primary.withOpacity(0.12),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Icon(widget.action.icon,
-                        size: 18, color: theme.colorScheme.primary),
-                  ),
+                  Icon(widget.icon, size: 19, color: _kPakGreen),
                   const SizedBox(width: 10),
-                  Expanded(
+                  Flexible(
                     child: Text(
-                      widget.action.label,
+                      widget.label,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall?.copyWith(
+                      style: const TextStyle(
+                        fontSize: 14.5,
                         fontWeight: FontWeight.w600,
-                        letterSpacing: -0.1,
+                        color: _EmptyState._ink,
                       ),
                     ),
                   ),
@@ -2272,15 +2054,92 @@ class _QuickActionCardState extends State<_QuickActionCard> {
   }
 }
 
+/// A thin, low-opacity outline of Pakistan's borders, drawn as a stroked
+/// path from a hand-plotted set of normalized boundary points — the
+/// background watermark behind the home screen's quick-action cards. Purely
+/// decorative; not intended as a geographically precise/political map.
+class _PakistanMapPainter extends CustomPainter {
+  final Color color;
+  const _PakistanMapPainter({required this.color});
+
+  // Normalized (0..1) boundary points, roughly clockwise from the
+  // northeast (Kashmir/Gilgit-Baltistan) down the eastern border, along
+  // the Sindh/Arabian Sea coast, west across Balochistan, and back up
+  // through the western and northern mountains.
+  static const List<Offset> _points = [
+    Offset(0.52, 0.02),
+    Offset(0.62, 0.06),
+    Offset(0.58, 0.11),
+    Offset(0.66, 0.15),
+    Offset(0.63, 0.21),
+    Offset(0.70, 0.27),
+    Offset(0.66, 0.33),
+    Offset(0.72, 0.40),
+    Offset(0.68, 0.47),
+    Offset(0.74, 0.53),
+    Offset(0.69, 0.60),
+    Offset(0.62, 0.63),
+    Offset(0.56, 0.70),
+    Offset(0.46, 0.73),
+    Offset(0.36, 0.72),
+    Offset(0.27, 0.68),
+    Offset(0.17, 0.63),
+    Offset(0.09, 0.56),
+    Offset(0.05, 0.47),
+    Offset(0.04, 0.38),
+    Offset(0.08, 0.31),
+    Offset(0.06, 0.24),
+    Offset(0.13, 0.25),
+    Offset(0.11, 0.19),
+    Offset(0.18, 0.20),
+    Offset(0.15, 0.13),
+    Offset(0.23, 0.14),
+    Offset(0.20, 0.07),
+    Offset(0.29, 0.08),
+    Offset(0.30, 0.02),
+    Offset(0.40, 0.045),
+    Offset(0.46, 0.015),
+  ];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.3
+      ..strokeJoin = StrokeJoin.round;
+
+    // Fit the shape into a tall box centered horizontally, sized relative
+    // to the available width so it scales sensibly across phone sizes.
+    final boxWidth = size.width * 0.92;
+    final boxHeight = boxWidth * 1.35;
+    final left = (size.width - boxWidth) / 2;
+    const top = 0.0;
+
+    final path = Path();
+    for (var i = 0; i < _points.length; i++) {
+      final p = _points[i];
+      final offset = Offset(left + p.dx * boxWidth, top + p.dy * boxHeight);
+      if (i == 0) {
+        path.moveTo(offset.dx, offset.dy);
+      } else {
+        path.lineTo(offset.dx, offset.dy);
+      }
+    }
+    path.close();
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _PakistanMapPainter oldDelegate) =>
+      oldDelegate.color != color;
+}
+
 /// Modern, rounded message bar in the style of ChatGPT/Gemini: a circular
 /// attachment ("+") button, a pill-shaped text field with an inline mic
 /// button, and a circular send button.
 class _ChatInputBar extends StatefulWidget {
   final TextEditingController controller;
-  // Step 27A: optional external focus node so the premium home screen's
-  // search card can request focus straight into this field. Falls back
-  // to an internally-owned one, exactly as before, if not supplied.
-  final FocusNode? focusNode;
   final bool isSending;
   // Step 26: true while a reply is actively streaming in — swaps the
   // Send button for a Stop button (tapping it keeps whatever text has
@@ -2294,7 +2153,6 @@ class _ChatInputBar extends StatefulWidget {
 
   const _ChatInputBar({
     required this.controller,
-    this.focusNode,
     required this.isSending,
     required this.isStreaming,
     required this.onSend,
@@ -2311,11 +2169,7 @@ class _ChatInputBar extends StatefulWidget {
 class _ChatInputBarState extends State<_ChatInputBar> {
   // Step 12.2: drives a subtle border/glow animation so the input pill
   // visibly "wakes up" on focus, matching ChatGPT/Meta AI's composer.
-  // Step 27A: uses the externally-supplied node when given (so the home
-  // screen's search card can hand off focus here) and only owns/disposes
-  // one itself as a fallback.
-  late final FocusNode _focusNode = widget.focusNode ?? FocusNode();
-  bool get _ownsFocusNode => widget.focusNode == null;
+  final FocusNode _focusNode = FocusNode();
   bool _focused = false;
 
   @override
@@ -2329,7 +2183,7 @@ class _ChatInputBarState extends State<_ChatInputBar> {
   void dispose() {
     widget.controller.removeListener(_onTextChanged);
     _focusNode.removeListener(_onFocusChanged);
-    if (_ownsFocusNode) _focusNode.dispose();
+    _focusNode.dispose();
     super.dispose();
   }
 
@@ -2367,21 +2221,22 @@ class _ChatInputBarState extends State<_ChatInputBar> {
           duration: const Duration(milliseconds: 200),
           curve: Curves.easeOut,
           constraints: const BoxConstraints(minHeight: 52),
+          // Step 27: white composer with a faint green-tinted border that
+          // brightens on focus, matching the reference's clean, minimal
+          // message bar.
           decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerHigh,
+            color: Colors.white,
             borderRadius: BorderRadius.circular(28),
             border: Border.all(
               color: _focused
-                  ? theme.colorScheme.primary.withOpacity(0.55)
-                  : theme.colorScheme.outlineVariant.withOpacity(0.0),
+                  ? _kPakGreen.withOpacity(0.55)
+                  : const Color(0xFFE7EEEA),
               width: 1.4,
             ),
             boxShadow: [
               BoxShadow(
-                color: (_focused
-                        ? theme.colorScheme.primary
-                        : theme.colorScheme.shadow)
-                    .withOpacity(isDark ? 0.06 : (_focused ? 0.16 : 0.10)),
+                color: (_focused ? _kPakGreen : Colors.black)
+                    .withOpacity(isDark ? 0.06 : (_focused ? 0.14 : 0.08)),
                 blurRadius: _focused ? 22 : 18,
                 offset: const Offset(0, 6),
               ),
@@ -2451,7 +2306,7 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       color: widget.micState == _MicState.listening
-                          ? theme.colorScheme.primary.withOpacity(0.14)
+                          ? _kPakGreen.withOpacity(0.14)
                           : Colors.transparent,
                     ),
                     child: Material(
@@ -2476,7 +2331,7 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                             child: switch (widget.micState) {
                               _MicState.listening => _VoiceEqualizer(
                                   key: const ValueKey('listening'),
-                                  color: theme.colorScheme.primary,
+                                  color: _kPakGreen,
                                 ),
                               _MicState.processing => SizedBox(
                                   key: const ValueKey('processing'),
@@ -2508,8 +2363,8 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                   curve: Curves.easeOut,
                   decoration: BoxDecoration(
                     color: hasText || isSending || isStreaming
-                        ? theme.colorScheme.primary
-                        : theme.colorScheme.primary.withOpacity(0.35),
+                        ? _kPakGreen
+                        : _kPakGreen.withOpacity(0.35),
                     shape: BoxShape.circle,
                   ),
                   child: Material(
@@ -2547,24 +2402,24 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                                   width: 12,
                                   height: 12,
                                   decoration: BoxDecoration(
-                                    color: theme.colorScheme.onPrimary,
+                                    color: Colors.white,
                                     borderRadius: BorderRadius.circular(3),
                                   ),
                                 )
                               : isSending
-                                  ? SizedBox(
-                                      key: const ValueKey('sending'),
+                                  ? const SizedBox(
+                                      key: ValueKey('sending'),
                                       width: 17,
                                       height: 17,
                                       child: CircularProgressIndicator(
                                         strokeWidth: 2,
-                                        color: theme.colorScheme.onPrimary,
+                                        color: Colors.white,
                                       ),
                                     )
-                                  : Icon(
+                                  : const Icon(
                                       Icons.arrow_upward_rounded,
-                                      key: const ValueKey('send'),
-                                      color: theme.colorScheme.onPrimary,
+                                      key: ValueKey('send'),
+                                      color: Colors.white,
                                       size: 20,
                                     ),
                         ),
