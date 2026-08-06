@@ -57,7 +57,7 @@ class _PakHome {
   _PakHome._();
   static const Color background = Color(0xFFF8F8F5);
   static const Color emerald = Color(0xFF0B7A57);
-  static const Color text = Color(0xFF1A1A1A);
+  static const Color text = Color(0xFF111827);
   static const Color secondaryText = Color(0xFF6B7280);
   static const Color card = Colors.white;
   static const Color border = Color(0xFFE5E7EB);
@@ -1278,13 +1278,6 @@ class _ChatScreenState extends State<ChatScreen> {
     // avatar) vs. the normal in-conversation bar (title + new-chat/clear).
     final isHomeState = !_isLoadingHistory && _messages.isEmpty;
 
-    // A live-updating title: falls back to "AI Chat" while history is still
-    // loading, otherwise reflects the open conversation's title so a
-    // rename in the drawer is visible immediately.
-    final conversationTitle = context.select<ConversationProvider, String>(
-      (p) => p.current?.title ?? 'AI Chat',
-    );
-
     return Theme(
       data: theme,
       child: Scaffold(
@@ -1309,46 +1302,23 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
           titleSpacing: 4,
-          // Step 27D: the Home top bar (shown only on the empty/landing
-          // state) swaps in the "Pak AI" wordmark, left-aligned right after
-          // the menu icon (matching the reference screenshot exactly — not
-          // centered), set in a bold serif face for a premium logo feel,
-          // with the profile avatar on the right. The moment a
-          // conversation has messages, this reverts to the original
-          // title/new-chat/clear-chat bar untouched, so nothing about
-          // in-chat navigation changes.
+          // Step 28: the "Pak AI" wordmark is now permanent branding in the
+          // AppBar — shown identically on Home AND on every chat screen. It
+          // never gets swapped for the conversation title anymore (that was
+          // the Step 27 bug where sending a message replaced "Pak AI" with
+          // e.g. "hi"). Conversation titles still live in the drawer/history
+          // list — they're just never shown in the AppBar. Left-aligned
+          // (not centered) right after the menu icon, in a bold serif
+          // (Playfair Display) for a premium logo feel.
           centerTitle: false,
-          title: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 220),
-            transitionBuilder: (child, animation) => FadeTransition(
-              opacity: animation,
-              child: ScaleTransition(scale: animation, child: child),
+          title: Text(
+            'Pak AI',
+            style: GoogleFonts.playfairDisplay(
+              fontSize: 30,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -0.3,
+              color: _PakHome.emerald,
             ),
-            // Step 27D: plain "Pak AI" wordmark only — no crescent-moon
-            // logo glyph — set in a bold serif (Playfair Display) in dark
-            // emerald, matching the reference exactly. Everything else
-            // about the app bar (menu, profile avatar, in-chat
-            // title/new-chat/clear-chat) is unchanged.
-            child: isHomeState
-                ? Text(
-                    'Pak AI',
-                    key: const ValueKey('home-title'),
-                    style: GoogleFonts.playfairDisplay(
-                      fontSize: 28,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: -0.2,
-                      color: _PakHome.emerald,
-                    ),
-                  )
-                : Text(
-                    _isLoadingHistory ? 'AI Chat' : conversationTitle,
-                    key: const ValueKey('chat-title'),
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: -0.2,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
           ),
           actions: isHomeState
               ? const [ProfileAvatarButton()]
@@ -1396,10 +1366,19 @@ class _ChatScreenState extends State<ChatScreen> {
                       switchInCurve: Curves.easeOut,
                       switchOutCurve: Curves.easeIn,
                       child: _messages.isEmpty
-                          ? _EmptyState(
-                              key: ValueKey('empty-$_conversationId'),
-                              theme: theme,
-                              onSuggestionTap: _applySuggestion,
+                          // Step 28: wrapped in SizedBox.expand so this pane
+                          // always fills the full available width/height —
+                          // guarantees the heading and quick-action pills
+                          // render flush against the left edge (24dp
+                          // padding) instead of the whole block ever being
+                          // able to size-to-content and end up looking
+                          // centered on the screen.
+                          ? SizedBox.expand(
+                              child: _EmptyState(
+                                key: ValueKey('empty-$_conversationId'),
+                                theme: theme,
+                                onSuggestionTap: _applySuggestion,
+                              ),
                             )
                           : NotificationListener<ScrollNotification>(
                               key: ValueKey('list-$_conversationId'),
@@ -1662,40 +1641,56 @@ class _ModePillState extends State<_ModePill> {
         scale: _pressed ? 0.96 : 1.0,
         duration: const Duration(milliseconds: 120),
         curve: Curves.easeOut,
-        child: Material(
-          color: _PakHome.border.withOpacity(0.65),
-          borderRadius: BorderRadius.circular(22),
-          child: InkWell(
+        // Step 28 polish: same soft/diffused manual shadow treatment as the
+        // quick-action pills (instead of Material's harsher directional
+        // elevation shadow) for a consistent, premium feel across the Home
+        // controls. Same tap target, emoji, label, and behavior.
+        child: Container(
+          decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(22),
-            onTap: widget.onTap,
-            child: Container(
-              constraints: const BoxConstraints(minHeight: 44, maxHeight: 46),
-              padding: const EdgeInsets.symmetric(horizontal: 14),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(22),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.07),
+                blurRadius: 12,
+                offset: const Offset(0, 3),
               ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(widget.mode.emoji, style: const TextStyle(fontSize: 16)),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Select Model',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.poppins(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: _PakHome.text,
+            ],
+          ),
+          child: Material(
+            color: _PakHome.border.withOpacity(0.65),
+            borderRadius: BorderRadius.circular(22),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(22),
+              onTap: widget.onTap,
+              child: Container(
+                constraints: const BoxConstraints(minHeight: 44, maxHeight: 46),
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(22),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(widget.mode.emoji, style: const TextStyle(fontSize: 16)),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Select Model',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.poppins(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: _PakHome.text,
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 2),
-                  Icon(
-                    Icons.expand_more_rounded,
-                    size: 16,
-                    color: _PakHome.secondaryText,
-                  ),
-                ],
+                    const SizedBox(width: 2),
+                    Icon(
+                      Icons.expand_more_rounded,
+                      size: 16,
+                      color: _PakHome.secondaryText,
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -1789,6 +1784,13 @@ class _ApiKeyBanner extends StatelessWidget {
           color: _PakHome.emerald.withOpacity(0.07),
           borderRadius: BorderRadius.circular(14),
           border: Border.all(color: _PakHome.emerald.withOpacity(0.18)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.04),
+              blurRadius: 10,
+              offset: const Offset(0, 3),
+            ),
+          ],
         ),
         child: Row(
           children: [
@@ -1823,19 +1825,21 @@ class _ApiKeyBanner extends StatelessWidget {
   }
 }
 
-/// Step 27D: the four Home quick-action entries, in the exact order and
-/// row grouping shown in the reference screenshot — "Ask a question" alone
-/// on its own row, "Brainstorm ideas" + "Write a script" side by side, then
-/// "Summarize a file" alone — each just filling the existing composer via
+/// Step 29: the six Home quick-action entries, in the exact order and
+/// 2-column x 3-row grid shown in the mockup — Ask a question /
+/// Brainstorm ideas / Summarize a file / Write a script / Translate text /
+/// Explain an image — each just filling the existing composer via
 /// [_applySuggestion]; sending itself still goes through the normal,
 /// unmodified input bar.
 class _HomeQuickAction {
   final IconData icon;
   final String label;
+  final String description;
   final String prompt;
   const _HomeQuickAction({
     required this.icon,
     required this.label,
+    required this.description,
     required this.prompt,
   });
 }
@@ -1843,29 +1847,45 @@ class _HomeQuickAction {
 const _HomeQuickAction _kActionAsk = _HomeQuickAction(
   icon: Icons.chat_bubble_outline_rounded,
   label: 'Ask a question',
+  description: 'Get clear answers to anything you want to know.',
   prompt: 'Ask a question',
 );
 const _HomeQuickAction _kActionBrainstorm = _HomeQuickAction(
   icon: Icons.lightbulb_outline_rounded,
   label: 'Brainstorm ideas',
+  description: 'Generate creative ideas and solutions.',
   prompt: 'Brainstorm ideas',
 );
 const _HomeQuickAction _kActionScript = _HomeQuickAction(
-  icon: Icons.edit_note_rounded,
+  icon: Icons.edit_outlined,
   label: 'Write a script',
+  description: 'Create scripts for videos, ads, stories and more.',
   prompt: 'Write a script',
 );
 const _HomeQuickAction _kActionSummarize = _HomeQuickAction(
   icon: Icons.description_outlined,
   label: 'Summarize a file',
+  description: 'Upload a file and get key points instantly.',
   prompt: 'Summarize a file',
 );
+const _HomeQuickAction _kActionTranslate = _HomeQuickAction(
+  icon: Icons.public,
+  label: 'Translate text',
+  description: 'Translate into any language instantly.',
+  prompt: 'Translate text',
+);
+const _HomeQuickAction _kActionExplainImage = _HomeQuickAction(
+  icon: Icons.image_outlined,
+  label: 'Explain an image',
+  description: 'Upload an image and get detailed explanation.',
+  prompt: 'Explain an image',
+);
 
-/// A clean, minimal "empty chat" home screen matching the reference
-/// screenshot exactly: a light decorative Pakistan-outline backdrop, a
-/// left-aligned bold serif "What can I do for you?" heading, and the
-/// quick-action pills grouped in the same rows as the reference (one
-/// full pill, then two side by side, then one full pill).
+/// A clean, minimal "empty chat" home screen matching the approved mockup
+/// pixel-for-pixel: a light decorative Pakistan-outline backdrop, a
+/// left-aligned bold serif "What can I help you with today?" heading, and
+/// the six quick-action cards (icon, bold title, short description) laid
+/// out as a 2-column x 3-row grid.
 class _EmptyState extends StatelessWidget {
   final ThemeData theme;
 
@@ -1874,94 +1894,139 @@ class _EmptyState extends StatelessWidget {
   /// input bar, so this stays a pure UI convenience.
   final ValueChanged<String> onSuggestionTap;
 
-  const _EmptyState({super.key, required this.theme, required this.onSuggestionTap});
-
   @override
   Widget build(BuildContext context) {
-    // Step 27D — Final Home Screen: fixed light palette (see `_PakHome`),
-    // a 24/16 spacing rhythm, and everything left-aligned, following the
-    // reference screenshot exactly. Chat bubbles, streaming, attachments,
-    // and routing are untouched — this widget only ever mounts on the
-    // empty conversation state.
+    // Step 28 — Final Premium UI Refinement: fixed light palette (see
+    // `_PakHome`), a 24/16 spacing rhythm, and everything explicitly
+    // left-aligned (width: double.infinity + crossAxisAlignment.start +
+    // TextAlign.left) so nothing can ever collapse to content-width and
+    // read as centered. Chat bubbles, streaming, attachments, and routing
+    // are untouched — this widget only ever mounts on the empty
+    // conversation state.
     return DecoratedBox(
       decoration: const BoxDecoration(color: _PakHome.background),
       child: Stack(
         children: [
-          // Light decorative map line — subtle, drawn behind everything
-          // else so it can never interfere with text.
+          // Light decorative map line — very subtle (~2% opacity), drawn
+          // behind everything else so it can never interfere with text.
           Positioned.fill(
             child: IgnorePointer(
               child: CustomPaint(
                 painter: _PakOutlinePainter(
-                  color: _PakHome.text.withOpacity(0.035),
+                  color: _PakHome.text.withOpacity(0.02),
                 ),
               ),
             ),
           ),
           SingleChildScrollView(
             padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                FadeInUp(
-                  duration: const Duration(milliseconds: 420),
-                  child: Text(
-                    'What can I do\nfor you?',
-                    style: GoogleFonts.playfairDisplay(
-                      fontSize: 34,
-                      fontWeight: FontWeight.w800,
+            child: SizedBox(
+              width: double.infinity,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  FadeInUp(
+                    duration: const Duration(milliseconds: 420),
+                    child: Text(
+                      'What can I help you\nwith today?',
+                      textAlign: TextAlign.left,
+                      style: GoogleFonts.playfairDisplay(
+                        fontSize: 34,
+                        fontWeight: FontWeight.w800,
                       height: 1.18,
                       letterSpacing: -0.2,
                       color: _PakHome.text,
                     ),
                   ),
                 ),
-                const SizedBox(height: 28),
-                // Row 1 — "Ask a question" alone.
+                const SizedBox(height: 32),
+                // Step 29.1 — Approved-mockup match: a 2-column x 3-row
+                // grid of full content cards (icon, bold title, short
+                // description), in the exact mockup order — Ask a
+                // question / Brainstorm ideas, Summarize a file / Write a
+                // script, Translate text / Explain an image. Each row is
+                // wrapped in IntrinsicHeight with stretched children so the
+                // two cards in a row always match each other's height
+                // (whichever has the longer description), while every row
+                // sizes independently to its own content — never a rigid
+                // fixed-height grid.
                 FadeInUp(
                   duration: const Duration(milliseconds: 420),
                   delay: const Duration(milliseconds: 100),
-                  child: _QuickActionPill(
-                    action: _kActionAsk,
-                    onTap: () => onSuggestionTap(_kActionAsk.prompt),
+                  child: IntrinsicHeight(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(
+                          child: _QuickActionPill(
+                            action: _kActionAsk,
+                            onTap: () => onSuggestionTap(_kActionAsk.prompt),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _QuickActionPill(
+                            action: _kActionBrainstorm,
+                            onTap: () => onSuggestionTap(_kActionBrainstorm.prompt),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-                const SizedBox(height: 14),
-                // Row 2 — "Brainstorm ideas" and "Write a script" side by
-                // side, sized to their own content (not stretched), matching
-                // the reference exactly. A Wrap (not a Row) so that on the
-                // narrowest supported widths (320dp) the second pill drops
-                // to its own line instead of causing a RenderFlex overflow.
+                const SizedBox(height: 12),
                 FadeInUp(
                   duration: const Duration(milliseconds: 420),
                   delay: const Duration(milliseconds: 140),
-                  child: Wrap(
-                    spacing: 14,
-                    runSpacing: 14,
-                    children: [
-                      _QuickActionPill(
-                        action: _kActionBrainstorm,
-                        onTap: () => onSuggestionTap(_kActionBrainstorm.prompt),
-                      ),
-                      _QuickActionPill(
-                        action: _kActionScript,
-                        onTap: () => onSuggestionTap(_kActionScript.prompt),
-                      ),
-                    ],
+                  child: IntrinsicHeight(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(
+                          child: _QuickActionPill(
+                            action: _kActionSummarize,
+                            onTap: () => onSuggestionTap(_kActionSummarize.prompt),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _QuickActionPill(
+                            action: _kActionScript,
+                            onTap: () => onSuggestionTap(_kActionScript.prompt),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-                const SizedBox(height: 14),
-                // Row 3 — "Summarize a file" alone.
+                const SizedBox(height: 12),
                 FadeInUp(
                   duration: const Duration(milliseconds: 420),
                   delay: const Duration(milliseconds: 180),
-                  child: _QuickActionPill(
-                    action: _kActionSummarize,
-                    onTap: () => onSuggestionTap(_kActionSummarize.prompt),
+                  child: IntrinsicHeight(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(
+                          child: _QuickActionPill(
+                            action: _kActionTranslate,
+                            onTap: () => onSuggestionTap(_kActionTranslate.prompt),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _QuickActionPill(
+                            action: _kActionExplainImage,
+                            onTap: () => onSuggestionTap(_kActionExplainImage.prompt),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ],
+              ),
             ),
           ),
         ],
@@ -1970,11 +2035,14 @@ class _EmptyState extends StatelessWidget {
   }
 }
 
-/// One quick-action pill: content-sized (not stretched), a bare emerald
-/// outline icon on the left, bold dark label, a soft shadow, and the
-/// asymmetric "speech bubble" corner treatment (small top-left radius,
-/// fully rounded elsewhere) seen in the reference screenshot. A quiet
-/// press-scale plus the platform ripple — no bounce.
+/// One quick-action card, matching the approved mockup exactly: a bare
+/// emerald outline icon top-left, a bold dark title, and a short gray
+/// description below it — uniformly rounded corners (no asymmetric
+/// "speech bubble" notch), no visible border, and a soft diffused shadow.
+/// Stretches to fill its half of the 2-column grid and to match its
+/// row-mate's height (see the `IntrinsicHeight` wrapper in `_EmptyState`),
+/// but is otherwise sized to its own content — never a fixed height. A
+/// quiet press-scale plus the platform ripple — no bounce.
 class _QuickActionPill extends StatefulWidget {
   final _HomeQuickAction action;
   final VoidCallback onTap;
@@ -1987,12 +2055,7 @@ class _QuickActionPill extends StatefulWidget {
 class _QuickActionPillState extends State<_QuickActionPill> {
   bool _pressed = false;
 
-  static const BorderRadius _pillRadius = BorderRadius.only(
-    topLeft: Radius.circular(10),
-    topRight: Radius.circular(30),
-    bottomLeft: Radius.circular(30),
-    bottomRight: Radius.circular(30),
-  );
+  static const BorderRadius _cardRadius = BorderRadius.all(Radius.circular(18));
 
   void _setPressed(bool value) {
     if (_pressed != value) setState(() => _pressed = value);
@@ -2008,42 +2071,56 @@ class _QuickActionPillState extends State<_QuickActionPill> {
         scale: _pressed ? 0.98 : 1.0,
         duration: const Duration(milliseconds: 120),
         curve: Curves.easeOut,
-        child: Material(
-          color: _PakHome.card,
-          borderRadius: _pillRadius,
-          shadowColor: Colors.black.withOpacity(0.10),
-          elevation: _pressed ? 1 : 3,
-          child: InkWell(
-            borderRadius: _pillRadius,
-            onTap: widget.onTap,
-            child: Container(
-              height: 58,
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              decoration: BoxDecoration(
-                borderRadius: _pillRadius,
-                border: Border.all(color: _PakHome.border, width: 1),
+        // A soft, wide, low-opacity manual shadow (instead of Material's
+        // default directional elevation shadow) reads as far more
+        // premium/diffused, matching the mockup's gentle card shadow.
+        // Material itself is kept for the ink ripple only.
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: _cardRadius,
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(_pressed ? 0.04 : 0.07),
+                blurRadius: _pressed ? 10 : 16,
+                offset: const Offset(0, 4),
               ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(widget.action.icon, size: 22, color: _PakHome.emerald),
-                  const SizedBox(width: 12),
-                  // Flexible (not a bare Text) so that on the narrowest
-                  // supported widths (320dp) the label ellipsizes cleanly
-                  // instead of ever triggering a RenderFlex overflow.
-                  Flexible(
-                    child: Text(
+            ],
+          ),
+          child: Material(
+            color: _PakHome.card,
+            borderRadius: _cardRadius,
+            child: InkWell(
+              borderRadius: _cardRadius,
+              onTap: widget.onTap,
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(widget.action.icon, size: 22, color: _PakHome.emerald),
+                    const SizedBox(height: 10),
+                    Text(
                       widget.action.label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
                       style: GoogleFonts.poppins(
-                        fontSize: 15.5,
-                        fontWeight: FontWeight.w600,
+                        fontSize: 14.5,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: -0.1,
                         color: _PakHome.text,
                       ),
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 3),
+                    Text(
+                      widget.action.description,
+                      style: GoogleFonts.poppins(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w400,
+                        height: 1.35,
+                        color: _PakHome.secondaryText,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
