@@ -73,7 +73,16 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _isSending = false;
   bool _isLoadingHistory = true;
   bool _hasApiKey = true; // assume true until checked, to avoid a flash
-  _PendingAttachment? _pendingAttachment;
+
+  // Step 22B: zero or more attachments waiting to go out with the next
+  // message, in the order they were picked (mixing images and PDFs freely).
+  // `_attachmentsLocked` flips true the instant Send is tapped — before any
+  // async work — and stays true until the attachments have either failed
+  // (put back for editing) or been folded into a sent message. While
+  // locked, the row shows no remove buttons and nothing about its layout
+  // changes again, which is what keeps the input area from jumping.
+  final List<_PendingAttachment> _pendingAttachments = [];
+  bool _attachmentsLocked = false;
 
   // Read Aloud (Step 21A): on-device TTS for AI replies, routed entirely
   // through the shared `VoiceManager` singleton so only one message can
@@ -169,7 +178,8 @@ class _ChatScreenState extends State<ChatScreen> {
         ..addAll(provider.currentMessages);
       _conversationId = id;
       _streamingMessage = null;
-      _pendingAttachment = null;
+      _pendingAttachments.clear();
+      _attachmentsLocked = false;
     });
     _scrollToBottom();
   }
@@ -192,7 +202,8 @@ class _ChatScreenState extends State<ChatScreen> {
         ..addAll(provider.currentMessages);
       _conversationId = id;
       _streamingMessage = null;
-      _pendingAttachment = null;
+      _pendingAttachments.clear();
+      _attachmentsLocked = false;
     });
     _scrollToBottom();
   }
@@ -225,26 +236,34 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     final text = _inputController.text.trim();
-    final pendingAttachment = _pendingAttachment;
-    if ((text.isEmpty && pendingAttachment == null) || _isSending) return;
+    // Snapshot the pending list — everything below works off this local
+    // copy, so nothing about it can change mid-send.
+    final attachmentsToSend = List<_PendingAttachment>.from(_pendingAttachments);
+    if ((text.isEmpty && attachmentsToSend.isEmpty) || _isSending) return;
 
-    ChatAttachment? attachmentMeta;
-    GeminiInlinePart? attachmentPart;
-    String? attachmentExtractedText;
+    // Prevent duplicate sends and lock the attachment preview immediately —
+    // before any async work — so the row (and the input area around it)
+    // does not change shape again until this whole send resolves.
+    setState(() {
+      _isSending = true;
+      _attachmentsLocked = attachmentsToSend.isNotEmpty;
+    });
 
-    if (pendingAttachment != null) {
-      // Show activity right away — compressing/reading a file (or
-      // extracting text from a PDF) can take a moment, and the send
-      // button's spinner is the only feedback for it.
-      setState(() => _isSending = true);
+    final attachmentMetas = <ChatAttachment>[];
+    final attachmentParts = <GeminiInlinePart>[];
+    final attachmentExtractedTexts = <String>[];
+
+    for (final pending in attachmentsToSend) {
       try {
         final processed = await AttachmentProcessorService.process(
-          pendingAttachment.result,
-          pendingAttachment.source,
+          pending.result,
+          pending.source,
         );
-        attachmentMeta = processed.metadata;
-        attachmentPart = processed.part;
-        attachmentExtractedText = processed.extractedText;
+        attachmentMetas.add(processed.metadata);
+        if (processed.part != null) attachmentParts.add(processed.part!);
+        if (processed.extractedText != null) {
+          attachmentExtractedTexts.add(processed.extractedText!);
+        }
       } on AttachmentException catch (e) {
         _reportAttachmentFailure(e.message);
         return;
@@ -254,19 +273,25 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     }
 
-    // Allow sending an attachment on its own with a sensible default
+    // Allow sending attachments on their own with a sensible default
     // prompt, rather than forcing the user to type something first.
-    final outgoingText =
-        text.isNotEmpty ? text : 'What can you tell me about this attachment?';
+    final outgoingText = text.isNotEmpty
+        ? text
+        : (attachmentMetas.length > 1
+            ? 'What can you tell me about these attachments?'
+            : 'What can you tell me about this attachment?');
 
+    // Every attachment has now finished processing — only now do we clear
+    // the pending row, in the very same frame the sent bubble (carrying
+    // those same attachments) appears, so nothing visibly pops in or out.
     setState(() {
       _messages.add(ChatMessage(
         text: outgoingText,
         isUser: true,
-        attachments: attachmentMeta != null ? [attachmentMeta] : const [],
+        attachments: attachmentMetas,
       ));
-      _isSending = true;
-      _pendingAttachment = null;
+      _pendingAttachments.clear();
+      _attachmentsLocked = false;
     });
     _inputController.clear();
     _scrollToBottom();
@@ -281,19 +306,19 @@ class _ChatScreenState extends State<ChatScreen> {
       // Drop the message we just added from history (it's sent as `prompt`).
       if (history.isNotEmpty) history.removeLast();
 
-      // A PDF's extracted text is folded into the outgoing prompt for
+      // Any PDFs' extracted text is folded into the outgoing prompt for
       // *this* turn only — the chat bubble still shows just what the user
       // typed (or the default prompt), and `history` above already used
       // that shorter text, so a long document is never re-sent on every
-      // follow-up message.
-      final geminiPrompt = attachmentExtractedText != null
-          ? '$attachmentExtractedText\n\n${outgoingText}'
+      // follow-up message. Multiple PDFs are joined in selection order.
+      final geminiPrompt = attachmentExtractedTexts.isNotEmpty
+          ? '${attachmentExtractedTexts.join('\n\n')}\n\n$outgoingText'
           : outgoingText;
 
       final reply = await GeminiService.sendMessage(
         geminiPrompt,
         history: history,
-        attachments: attachmentPart != null ? [attachmentPart] : const [],
+        attachments: attachmentParts,
         modeInstruction: _mode.systemPrompt,
       );
 
@@ -326,6 +351,9 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() {
       _messages.add(ChatMessage(text: message, isUser: false, isError: true));
       _isSending = false;
+      // Unlock so the person can remove the offending attachment (or any
+      // other) and try again — they're still pending, never lost.
+      _attachmentsLocked = false;
     });
     _scrollToBottom();
   }
@@ -453,38 +481,56 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// Opens the attachment bottom sheet, hands off to the matching picker,
-  /// and — as of Step 9 — holds the result as a pending attachment shown
-  /// above the input bar until the message is sent (or removed).
+  /// and holds every result as a pending attachment shown above the input
+  /// bar until the message is sent (or an item is individually removed).
+  ///
+  /// Step 22B: gallery, PDF, and generic-file pickers now support
+  /// selecting several items at once; results are appended (never
+  /// replacing what's already pending) so opening the sheet more than once
+  /// — or mixing images and PDFs — keeps every earlier pick, in the order
+  /// everything was selected. Anything already pending (same file path) is
+  /// silently skipped so the same file can't be attached twice.
   Future<void> _openAttachmentSheet() async {
     if (_isSending) return;
     final type = await showAttachmentSheet(context);
     if (type == null || !mounted) return;
 
     try {
-      AttachmentResult? result;
+      List<AttachmentResult> results;
       switch (type) {
         case AttachmentType.gallery:
-          result = await AttachmentService.pickFromGallery();
+          results = await AttachmentService.pickMultipleFromGallery();
           break;
         case AttachmentType.camera:
-          result = await AttachmentService.pickFromCamera();
+          // The camera captures one photo per tap — nothing to multiplex
+          // here, but repeated taps still append in order like everything
+          // else.
+          final single = await AttachmentService.pickFromCamera();
+          results = single != null ? [single] : const [];
           break;
         case AttachmentType.document:
-          result = await AttachmentService.pickDocument();
+          results = await AttachmentService.pickMultipleDocuments();
           break;
         case AttachmentType.file:
-          result = await AttachmentService.pickAnyFile();
+          results = await AttachmentService.pickMultipleFiles();
           break;
       }
 
-      if (!mounted || result == null) return;
+      if (!mounted || results.isEmpty) return;
 
-      final mimeType = AttachmentProcessorService.detectMimeType(result.path);
-      final kind = AttachmentProcessorService.classify(type, mimeType);
+      final existingPaths =
+          _pendingAttachments.map((p) => p.result.path).toSet();
+      final additions = <_PendingAttachment>[];
+      for (final result in results) {
+        // Prevent duplicate attachments — both within this pick (e.g. the
+        // same file chosen twice in one picker session) and against
+        // anything already pending.
+        if (!existingPaths.add(result.path)) continue;
 
-      setState(() {
-        _pendingAttachment = _PendingAttachment(
-          result: result!,
+        final mimeType = AttachmentProcessorService.detectMimeType(result.path);
+        final kind = AttachmentProcessorService.classify(type, mimeType);
+        additions.add(_PendingAttachment(
+          result: result,
           source: type,
           previewMeta: ChatAttachment(
             name: result.name,
@@ -493,7 +539,14 @@ class _ChatScreenState extends State<ChatScreen> {
             kind: kind,
             path: result.path,
           ),
-        );
+        ));
+      }
+
+      if (additions.isEmpty) return;
+      setState(() {
+        // Appending — never replacing — is what preserves selection order
+        // across multiple trips through the attachment sheet.
+        _pendingAttachments.addAll(additions);
       });
     } catch (_) {
       if (!mounted) return;
@@ -506,8 +559,16 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  void _removePendingAttachment() {
-    setState(() => _pendingAttachment = null);
+  /// Removes one pending attachment by its position in the row. No-ops
+  /// while the row is locked (an in-flight send) so it can't be edited out
+  /// from under itself.
+  void _removePendingAttachmentAt(int index) {
+    if (_attachmentsLocked) return;
+    setState(() {
+      if (index >= 0 && index < _pendingAttachments.length) {
+        _pendingAttachments.removeAt(index);
+      }
+    });
   }
 
   /// Fills the composer with a tapped suggestion chip's text (Step 12.3).
@@ -788,17 +849,30 @@ class _ChatScreenState extends State<ChatScreen> {
                             ),
                     ),
             ),
-            if (_pendingAttachment != null)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: AttachmentPreview(
-                    attachment: _pendingAttachment!.previewMeta,
-                    onRemove: _isSending ? null : _removePendingAttachment,
-                  ),
-                ),
-              ),
+            // Step 22B: wrapped in AnimatedSize so the row's appearance and
+            // disappearance is a smooth height animation instead of an
+            // instant pop — that's what stops the mode pill and input bar
+            // below it from visibly jumping when attachments are added,
+            // removed, or cleared after a send completes.
+            AnimatedSize(
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeOut,
+              alignment: Alignment.topCenter,
+              child: _pendingAttachments.isEmpty
+                  ? const SizedBox(width: double.infinity, height: 0)
+                  : Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                      child: AttachmentPreviewList(
+                        attachments: _pendingAttachments
+                            .map((p) => p.previewMeta)
+                            .toList(growable: false),
+                        locked: _attachmentsLocked,
+                        onRemoveAt: _attachmentsLocked
+                            ? null
+                            : _removePendingAttachmentAt,
+                      ),
+                    ),
+            ),
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
               child: Align(

@@ -79,4 +79,52 @@ class AttachmentService {
       sizeBytes: picked.size,
     );
   }
+
+  // --- Step 22B: multi-select pickers -------------------------------------
+  //
+  // These mirror the single-pick methods above but return every item the
+  // user selected, in the order `image_picker`/`file_picker` reports them
+  // (i.e. selection order) so callers can preserve that order verbatim.
+
+  /// Pick one or more images from the device gallery/photo library.
+  static Future<List<AttachmentResult>> pickMultipleFromGallery() async {
+    final List<XFile> files =
+        await _imagePicker.pickMultiImage(imageQuality: 90);
+    if (files.isEmpty) return const [];
+    final results = <AttachmentResult>[];
+    for (final file in files) {
+      results.add(AttachmentResult(
+        name: file.name,
+        path: file.path,
+        sizeBytes: await file.length(),
+      ));
+    }
+    return results;
+  }
+
+  /// Pick one or more PDF documents.
+  static Future<List<AttachmentResult>> pickMultipleDocuments() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['pdf'],
+      allowMultiple: true,
+    );
+    final picked = result?.files ?? const [];
+    return picked
+        .where((f) => f.path != null)
+        .map((f) =>
+            AttachmentResult(name: f.name, path: f.path!, sizeBytes: f.size))
+        .toList();
+  }
+
+  /// Pick one or more files of any type from device storage.
+  static Future<List<AttachmentResult>> pickMultipleFiles() async {
+    final result = await FilePicker.platform.pickFiles(allowMultiple: true);
+    final picked = result?.files ?? const [];
+    return picked
+        .where((f) => f.path != null)
+        .map((f) =>
+            AttachmentResult(name: f.name, path: f.path!, sizeBytes: f.size))
+        .toList();
+  }
 }
