@@ -552,6 +552,17 @@ Tone and formatting:
     // before the next starts. `async`/`await` never blocks the UI thread
     // either way; this only changes *when* each batch's HTTP request is
     // fired off.
+    // Track which slice of the original, globally-ordered image list each
+    // batch corresponds to (1-based, inclusive) — used below purely to
+    // help the merge step number images in their original order. This
+    // never surfaces any "batch" language to the model or the user; it's
+    // just an index range.
+    final batchRanges = <List<int>>[];
+    for (final batch in batches) {
+      final start = (batchRanges.isEmpty ? 0 : batchRanges.last[1]) + 1;
+      batchRanges.add([start, start + batch.length - 1]);
+    }
+
     Future<void> runBatch(int index) async {
       final batchAttachments = [
         ...batches[index],
@@ -561,12 +572,20 @@ Tone and formatting:
         // behavior.
         if (index == 0) ...otherAttachments,
       ];
+      // Step 25.1: this per-image-group prompt is intentionally free of
+      // any "batch"/"group"/"part X of Y" framing — whatever comes back
+      // here may end up quoted directly into the final merge prompt (or,
+      // if every other group fails, returned to the user as-is), so
+      // nothing about the internal split should be something the model
+      // learns to talk about.
       final batchPrompt = totalBatches > 1
-          ? 'These are images ${index + 1} of $totalBatches batches from a '
-              'single request — analyze only what is visible in this batch. '
-              'Your analysis will be combined with the other batches into '
-              'one final answer, so be thorough and specific about what you '
-              'observe.\n\nUser\'s request: $prompt'
+          ? 'Analyze only the image(s) attached to this message, in order. '
+              'Be thorough and specific about what is visible in each one — '
+              'this analysis will later be combined with analysis of other '
+              'images from the same request into one seamless answer, so '
+              'write plainly and factually with no meta-commentary about '
+              'this being a partial analysis.\n\n'
+              'User\'s request: $prompt'
           : prompt;
 
       String? reply;
@@ -605,7 +624,18 @@ Tone and formatting:
       List.generate(totalBatches, (index) => runBatch(index)),
     );
 
-    final batchReplies = results.whereType<String>().toList(growable: false);
+    // Keep successful results paired with their original image-index
+    // range so the merge prompt below can present them in true image
+    // order even when one or more groups failed and were dropped.
+    final successfulSections = <MapEntry<List<int>, String>>[];
+    for (var i = 0; i < totalBatches; i++) {
+      final reply = results[i];
+      if (reply != null) {
+        successfulSections.add(MapEntry(batchRanges[i], reply));
+      }
+    }
+    final batchReplies =
+        successfulSections.map((e) => e.value).toList(growable: false);
 
     if (batchReplies.isEmpty) {
       throw lastFailure ??
@@ -623,27 +653,55 @@ Tone and formatting:
       ),
     );
 
+    // Step 25.1 — Premium Vision Merge: turn the separate per-group notes
+    // above into ONE natural, professional answer, written the way a
+    // careful assistant (ChatGPT-style) would respond after looking at
+    // every image at once — never as a report on how the request was
+    // processed internally.
     final mergePrompt = StringBuffer()
       ..writeln(
-        'You separately analyzed ${batchReplies.length} batch(es) of '
-        'images that are all part of one request. Here is each batch\'s '
-        'analysis, in the original image order:',
+        'Below are factual notes describing a set of images, covering all '
+        'of them in their original order. The notes were gathered in '
+        'separate passes purely as an internal implementation detail — '
+        'that detail is not relevant to the final answer and must never '
+        'be mentioned, hinted at, or alluded to.',
       );
-    for (var i = 0; i < batchReplies.length; i++) {
+    for (final section in successfulSections) {
+      final range = section.key;
+      final label = range[0] == range[1]
+          ? 'Image ${range[0]}'
+          : 'Images ${range[0]}-${range[1]}';
       mergePrompt
         ..writeln()
-        ..writeln('Batch ${i + 1} analysis:')
-        ..writeln(batchReplies[i]);
+        ..writeln('$label notes:')
+        ..writeln(section.value);
     }
     mergePrompt
       ..writeln()
-      ..writeln('User\'s original request: $prompt')
+      ..writeln('User\'s request: $prompt')
       ..writeln()
       ..writeln(
-        'Combine these into ONE clear, well-organized final answer that '
-        'directly addresses the user\'s request, as if you had analyzed '
-        'all the images together in a single pass. Do not mention batches, '
-        'merging, or the analysis process itself.',
+        'Write your reply as a single, natural, well-organized answer, as '
+        'if you had looked at every image together in one pass:\n'
+        '- Never mention batches, groups, parts, passes, internal notes, '
+        'or any other detail about how this was processed — the notes '
+        'above are only for your reference, not something to describe or '
+        'quote from.\n'
+        '- Remove duplicate information and combine overlapping or '
+        'similar descriptions instead of repeating them.\n'
+        '- If the user asked a specific question or gave a specific '
+        'instruction (for example: explain, solve, identify, compare, '
+        'or extract something), answer that request directly and '
+        'concisely — do not default to a generic description of every '
+        'image if that is not what was asked.\n'
+        '- Otherwise, structure the reply as: a short "Summary" first, '
+        'then a numbered walkthrough of the images in their original '
+        'order (Image 1, Image 2, ...), each with a concise, useful '
+        'description.\n'
+        '- Use clear, professional formatting (short paragraphs, '
+        'headings, or bullet points as appropriate) and natural language '
+        'throughout — no repeated sentences, and no filler about the '
+        'process behind the answer.',
       );
 
     try {
