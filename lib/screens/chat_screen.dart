@@ -35,10 +35,11 @@ enum _MicState { idle, listening, processing }
 // Step 23/24: per-request attachment limits. Images beyond
 // `_kMaxImagesPerRequest` are rejected at pick time; anything at or under
 // it that's still more than `GeminiService._kBatchSize` (5) is
-// automatically split into sequential batches at send time (Step 24 —
-// Smart Large Image Batch Processing) rather than sent in one giant
-// request, which is what keeps large image sets fast and reliable instead
-// of timing out.
+// automatically split into batches of `GeminiService._kBatchSize` and
+// sent to Gemini all at once in parallel (Step 24 — Smart Large Image
+// Batch Processing; Step 25 — Parallel Batch Processing) rather than one
+// giant request, which is what keeps large image sets both fast and
+// reliable instead of timing out.
 const int _kMaxImagesPerRequest = 20;
 const int _kMaxPdfsPerRequest = 1;
 
@@ -131,6 +132,30 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _isLoadingHistory = true;
   bool _hasApiKey = true; // assume true until checked, to avoid a flash
 
+  // Step 26: live network streaming of the AI reply, word-by-word/chunk-
+  // by-chunk, replacing the old client-side "fake" character reveal for
+  // any plain text turn (no attachments). `_streamSubscription` is the
+  // handle the Stop button cancels; `_streamCompleter` is what lets
+  // `_stopGenerating` unblock the `await` inside `_streamAiReply` the
+  // instant Stop is tapped, instead of waiting for the (now-cancelled)
+  // stream to naturally finish.
+  bool _isStreaming = false;
+  StreamSubscription<String>? _streamSubscription;
+  Completer<void>? _streamCompleter;
+  // Which `_messages` index is currently being filled in live — lets the
+  // list tell that one bubble apart from every other (already-settled)
+  // reply so only it skips the local reveal animation and hides its
+  // action row until the stream finishes.
+  int? _liveStreamIndex;
+
+  // Step 26: smooth auto-scroll that follows a streaming reply only while
+  // the person is already at (or very near) the bottom of the list. The
+  // moment they scroll up to read something earlier, this flips false and
+  // stays false — no further auto-scroll — until they scroll back down
+  // themselves or a new message is explicitly sent/regenerated.
+  bool _followBottom = true;
+  static const double _bottomFollowThreshold = 72;
+
   // Step 22B: zero or more attachments waiting to go out with the next
   // message, in the order they were picked (mixing images and PDFs freely).
   // `_attachmentsLocked` flips true the instant Send is tapped — before any
@@ -199,6 +224,7 @@ class _ChatScreenState extends State<ChatScreen> {
     super.initState();
     _loadHistory();
     _checkApiKey();
+    _scrollController.addListener(_onScrollChanged);
     VoiceManager.instance.addListener(_onVoiceStateChanged);
     // Fire-and-forget: warms the voice cache and applies natural
     // rate/pitch/volume defaults. Runs once per app lifetime; if it's
@@ -231,7 +257,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _conversationId = provider.currentId;
       _isLoadingHistory = false;
     });
-    _scrollToBottom();
+    _scrollToBottom(force: true);
   }
 
   /// Swaps `_messages` to a different conversation's history. Stops any
@@ -244,6 +270,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_speakingIndex != null) {
       await VoiceManager.instance.stop();
     }
+    _stopGenerating();
     await provider.selectConversation(id);
     if (!mounted) return;
     setState(() {
@@ -255,7 +282,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _pendingAttachments.clear();
       _attachmentsLocked = false;
     });
-    _scrollToBottom();
+    _scrollToBottom(force: true);
   }
 
   /// Starts a new chat: reuses the current conversation if it's still
@@ -268,6 +295,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_speakingIndex != null) {
       await VoiceManager.instance.stop();
     }
+    _stopGenerating();
     final id = await provider.startNewConversation();
     if (!mounted) return;
     setState(() {
@@ -279,7 +307,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _pendingAttachments.clear();
       _attachmentsLocked = false;
     });
-    _scrollToBottom();
+    _scrollToBottom(force: true);
   }
 
   Future<void> _checkApiKey() async {
@@ -291,11 +319,27 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     _inputController.dispose();
+    _scrollController.removeListener(_onScrollChanged);
     _scrollController.dispose();
     VoiceManager.instance.removeListener(_onVoiceStateChanged);
     unawaited(VoiceManager.instance.stop());
+    _streamSubscription?.cancel();
     _voiceInput.cancel();
     super.dispose();
+  }
+
+  /// Tracks whether the list is currently scrolled to (near) the bottom,
+  /// so streamed text only auto-follows while the person hasn't
+  /// deliberately scrolled up to read something earlier — see
+  /// [_scrollToBottom].
+  void _onScrollChanged() {
+    if (!_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    final distanceFromBottom = position.maxScrollExtent - position.pixels;
+    final atBottom = distanceFromBottom <= _bottomFollowThreshold;
+    if (atBottom != _followBottom) {
+      _followBottom = atBottom;
+    }
   }
 
   Future<void> _sendMessage() async {
@@ -386,18 +430,37 @@ class _ChatScreenState extends State<ChatScreen> {
       _attachmentsLocked = false;
     });
     _inputController.clear();
-    _scrollToBottom();
+    _scrollToBottom(force: true);
     unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
 
-    try {
-      // Build lightweight history from prior turns so Gemini has context.
-      final history = _messages
-          .where((m) => !m.isError)
-          .map((m) => {'role': m.isUser ? 'user' : 'model', 'text': m.text})
-          .toList();
-      // Drop the message we just added from history (it's sent as `prompt`).
-      if (history.isNotEmpty) history.removeLast();
+    // Build lightweight history from prior turns so Gemini has context.
+    final history = _messages
+        .where((m) => !m.isError)
+        .map((m) => {'role': m.isUser ? 'user' : 'model', 'text': m.text})
+        .toList();
+    // Drop the message we just added from history (it's sent as `prompt`).
+    if (history.isNotEmpty) history.removeLast();
 
+    // Step 26: a plain text turn with no attachments at all streams live,
+    // word-by-word, straight from Gemini. Anything with an attachment
+    // (image, PDF, or generic file) keeps using the existing batched,
+    // non-streaming path below — merging several image batches into one
+    // answer doesn't map onto a single token stream.
+    if (attachmentsToSend.isEmpty) {
+      setState(() {
+        _isSending = false; // handed off to _streamAiReply, which sets it
+        _sendingHasImages = false;
+        _sendStage = null;
+      });
+      await _streamAiReply(
+        insertIndex: _messages.length,
+        prompt: outgoingText,
+        history: history,
+      );
+      return;
+    }
+
+    try {
       // Any PDFs' extracted text is folded into the outgoing prompt for
       // *this* turn only — the chat bubble still shows just what the user
       // typed (or the default prompt), and `history` above already used
@@ -407,12 +470,13 @@ class _ChatScreenState extends State<ChatScreen> {
           ? '${attachmentExtractedTexts.join('\n\n')}\n\n$outgoingText'
           : outgoingText;
 
-      // Step 24: images go through the batching entry point (a no-op
+      // Step 24/25: images go through the batching entry point (a no-op
       // single request when there are 5 or fewer) so more than 5 are
-      // automatically split into sequential batches of 5, retried once
-      // each on failure, and merged into one final answer — everything
-      // else (generic file attachments) rides along with the first batch,
-      // exactly as a single request would have sent it before.
+      // automatically split into batches of 5 and sent to Gemini all at
+      // once in parallel — each retried once on failure — then merged
+      // into one final answer. Everything else (generic file attachments)
+      // rides along with the first batch, exactly as a single request
+      // would have sent it before.
       final imageParts = attachmentParts
           .where((p) => p.mimeType.startsWith('image/'))
           .toList(growable: false);
@@ -465,6 +529,138 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  /// Streams a fresh AI reply into `_messages` at [insertIndex] (appending
+  /// if it's already the end of the list, or replacing a just-removed
+  /// slot for regenerate/retry), one chunk at a time, live from Gemini.
+  ///
+  /// Drives `_isSending`/`_isStreaming` for the duration, keeps the list
+  /// auto-scrolled while the person hasn't scrolled away, and — on
+  /// failure with no text ever received — swaps the placeholder for an
+  /// error bubble. If Stop is tapped mid-stream (`_stopGenerating`),
+  /// whatever text has already arrived is kept as the final reply, exactly
+  /// as if the response had finished normally.
+  Future<void> _streamAiReply({
+    required int insertIndex,
+    required String prompt,
+    required List<Map<String, String>> history,
+  }) async {
+    final placeholder = ChatMessage(text: '', isUser: false);
+    setState(() {
+      if (insertIndex >= _messages.length) {
+        _messages.add(placeholder);
+      } else {
+        _messages.insert(insertIndex, placeholder);
+      }
+      _isSending = true;
+      _isStreaming = true;
+      _liveStreamIndex = insertIndex;
+    });
+    _scrollToBottom(force: true);
+
+    final buffer = StringBuffer();
+    final completer = Completer<void>();
+    _streamCompleter = completer;
+
+    final subscription = GeminiService.sendMessageStream(
+      prompt,
+      history: history,
+      modeInstruction: _mode.systemPrompt,
+    ).listen(
+      null,
+      onError: (Object e) {
+        if (!completer.isCompleted) completer.completeError(e);
+      },
+      onDone: () {
+        if (!completer.isCompleted) completer.complete();
+      },
+      cancelOnError: true,
+    );
+    subscription.onData((chunk) {
+      buffer.write(chunk);
+      if (!mounted) return;
+      setState(() {
+        if (insertIndex < _messages.length) {
+          _messages[insertIndex] = ChatMessage(
+            text: buffer.toString(),
+            isUser: false,
+            timestamp: placeholder.timestamp,
+          );
+        }
+      });
+      _scrollToBottom();
+    });
+    _streamSubscription = subscription;
+
+    try {
+      await completer.future;
+      if (!mounted) return;
+      if (buffer.isNotEmpty) {
+        setState(() {
+          _streamingMessage =
+              insertIndex < _messages.length ? _messages[insertIndex] : null;
+        });
+      } else {
+        // Stopped before any text ever arrived — nothing to show, so
+        // just drop the empty placeholder instead of leaving a blank
+        // bubble behind.
+        setState(() {
+          if (insertIndex < _messages.length) {
+            _messages.removeAt(insertIndex);
+          }
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      if (buffer.isEmpty) {
+        // No text ever arrived — swap the empty placeholder for an error
+        // bubble (with Retry available — see the `onRetry` wiring below).
+        final message =
+            e is GeminiException ? e.message : 'Could not reach Pak AI. Check your connection and try again.';
+        setState(() {
+          if (insertIndex < _messages.length) {
+            _messages[insertIndex] = ChatMessage(
+              text: message,
+              isUser: false,
+              isError: true,
+            );
+          }
+        });
+        _checkApiKey();
+      }
+      // Otherwise: partial text already streamed in — keep it as-is,
+      // same as a normal completion.
+    } finally {
+      await subscription.cancel();
+      if (identical(_streamSubscription, subscription)) {
+        _streamSubscription = null;
+      }
+      if (identical(_streamCompleter, completer)) {
+        _streamCompleter = null;
+      }
+      if (mounted) {
+        setState(() {
+          _isSending = false;
+          _isStreaming = false;
+          _liveStreamIndex = null;
+        });
+      }
+      _scrollToBottom();
+      unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
+    }
+  }
+
+  /// Stops an in-flight live stream immediately (Step 26 — "Stop
+  /// Generating"), keeping whatever text has already arrived as the final
+  /// reply. No-ops if nothing is currently streaming.
+  void _stopGenerating() {
+    if (!_isStreaming) return;
+    _streamSubscription?.cancel();
+    final completer = _streamCompleter;
+    if (completer != null && !completer.isCompleted) {
+      completer.complete();
+    }
+  }
+
   /// Step 23: runs [_recompressImageAggressively] on [part]'s bytes in a
   /// background isolate and returns a new, smaller [GeminiInlinePart] —
   /// or [part] unchanged if recompression fails or doesn't actually shrink
@@ -503,17 +699,33 @@ class _ChatScreenState extends State<ChatScreen> {
       _sendBatchCurrent = 0;
       _sendBatchTotal = 0;
     });
-    _scrollToBottom();
+    _scrollToBottom(force: true);
   }
 
-  void _scrollToBottom() {
+  /// Scrolls to the bottom of the chat.
+  ///
+  /// [force] is for explicit user actions (sending, regenerating,
+  /// switching conversations) — it always jumps to bottom and resets
+  /// "follow" mode on. Without [force] (e.g. every streamed chunk), this
+  /// only moves the list if the person is already following the bottom —
+  /// see [_onScrollChanged] — and uses an immediate `jumpTo` rather than
+  /// an animation, since re-triggering a 300ms animateTo on every chunk is
+  /// what causes jumpy/flickery scrolling during a fast stream.
+  void _scrollToBottom({bool force = false}) {
+    if (force) _followBottom = true;
+    if (!_followBottom) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scrollController.hasClients) return;
-      _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOut,
-      );
+      final target = _scrollController.position.maxScrollExtent;
+      if (force) {
+        _scrollController.animateTo(
+          target,
+          duration: const Duration(milliseconds: 260),
+          curve: Curves.easeOut,
+        );
+      } else {
+        _scrollController.jumpTo(target);
+      }
     });
   }
 
@@ -554,45 +766,44 @@ class _ChatScreenState extends State<ChatScreen> {
       await VoiceManager.instance.stop();
     }
 
-    setState(() {
-      _messages.removeAt(aiIndex);
-      _isSending = true;
-    });
-    _scrollToBottom();
+    setState(() => _messages.removeAt(aiIndex));
 
-    try {
-      final history = _messages
-          .sublist(0, aiIndex - 1)
-          .where((m) => !m.isError)
-          .map((m) => {'role': m.isUser ? 'user' : 'model', 'text': m.text})
-          .toList();
+    final history = _messages
+        .sublist(0, aiIndex - 1)
+        .where((m) => !m.isError)
+        .map((m) => {'role': m.isUser ? 'user' : 'model', 'text': m.text})
+        .toList();
 
-      final reply = await GeminiService.sendMessage(
-        userMessage.text,
-        history: history,
-        modeInstruction: _mode.systemPrompt,
-      );
+    await _streamAiReply(
+      insertIndex: aiIndex,
+      prompt: userMessage.text,
+      history: history,
+    );
+  }
 
-      if (!mounted) return;
-      final aiMessage = ChatMessage(text: reply, isUser: false);
-      setState(() {
-        _messages.insert(aiIndex, aiMessage);
-        _streamingMessage = aiMessage;
-      });
-    } on GeminiException catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _messages.insert(
-          aiIndex,
-          ChatMessage(text: e.message, isUser: false, isError: true),
-        );
-      });
-      _checkApiKey();
-    } finally {
-      if (mounted) setState(() => _isSending = false);
-      _scrollToBottom();
-      unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
-    }
+  /// Retries a failed AI reply (Step 26 — "Retry"): removes the error
+  /// bubble at [errorIndex] and re-streams a fresh answer to the same
+  /// prompt in its place. Only ever offered for the most recent message —
+  /// see the `onRetry` wiring at the call site.
+  Future<void> _retryLastMessage(int errorIndex) async {
+    if (_isSending) return;
+    if (errorIndex < 1 || errorIndex >= _messages.length) return;
+    final userMessage = _messages[errorIndex - 1];
+    if (!userMessage.isUser) return;
+
+    setState(() => _messages.removeAt(errorIndex));
+
+    final history = _messages
+        .sublist(0, errorIndex - 1)
+        .where((m) => !m.isError)
+        .map((m) => {'role': m.isUser ? 'user' : 'model', 'text': m.text})
+        .toList();
+
+    await _streamAiReply(
+      insertIndex: errorIndex,
+      prompt: userMessage.text,
+      history: history,
+    );
   }
 
   /// Removes a single message (used by the AI reply's "Delete" action, in
@@ -975,8 +1186,15 @@ class _ChatScreenState extends State<ChatScreen> {
                                 parent: AlwaysScrollableScrollPhysics(),
                               ),
                               padding: const EdgeInsets.all(16),
-                              itemCount:
-                                  _messages.length + (_isSending ? 1 : 0),
+                              // Step 26: while a reply is streaming live,
+                              // its own (growing) bubble already lives in
+                              // `_messages` and doubles as the "typing"
+                              // cue — the old separate typing/analyzing
+                              // row is only appended for sends that don't
+                              // stream (image/attachment sends still use
+                              // it, unchanged).
+                              itemCount: _messages.length +
+                                  (_isSending && !_isStreaming ? 1 : 0),
                               itemBuilder: (context, index) {
                                 if (index == _messages.length) {
                                   // Step 23: while analyzing image
@@ -996,6 +1214,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                 final isAiReply =
                                     !message.isUser && !message.isError;
                                 final isLast = index == _messages.length - 1;
+                                final isLive = _isStreaming &&
+                                    _liveStreamIndex == index;
                                 // Step 12.4: user messages slide in from the
                                 // right while fading in; AI (and error)
                                 // messages just fade in — no slide, no
@@ -1048,9 +1268,15 @@ class _ChatScreenState extends State<ChatScreen> {
                                           onDelete: isAiReply
                                               ? () => _deleteMessage(index)
                                               : null,
+                                          onRetry: message.isError &&
+                                                  isLast &&
+                                                  !_isSending
+                                              ? () => _retryLastMessage(index)
+                                              : null,
                                           isSpeaking: _speakingIndex == index,
                                           animate: identical(
                                               message, _streamingMessage),
+                                          isLive: isLive,
                                           onStreamTick: _scrollToBottom,
                                         ),
                                       );
@@ -1093,7 +1319,9 @@ class _ChatScreenState extends State<ChatScreen> {
             _ChatInputBar(
               controller: _inputController,
               isSending: _isSending,
+              isStreaming: _isStreaming,
               onSend: _sendMessage,
+              onStop: _stopGenerating,
               onAttachment: _openAttachmentSheet,
               onVoice: _onVoiceTap,
               micState: _micState,
@@ -1467,7 +1695,12 @@ class _SuggestionChipState extends State<_SuggestionChip> {
 class _ChatInputBar extends StatefulWidget {
   final TextEditingController controller;
   final bool isSending;
+  // Step 26: true while a reply is actively streaming in — swaps the
+  // Send button for a Stop button (tapping it keeps whatever text has
+  // already arrived, exactly like ChatGPT's stop-generating button).
+  final bool isStreaming;
   final VoidCallback onSend;
+  final VoidCallback onStop;
   final VoidCallback onAttachment;
   final VoidCallback onVoice;
   final _MicState micState;
@@ -1475,7 +1708,9 @@ class _ChatInputBar extends StatefulWidget {
   const _ChatInputBar({
     required this.controller,
     required this.isSending,
+    required this.isStreaming,
     required this.onSend,
+    required this.onStop,
     required this.onAttachment,
     required this.onVoice,
     required this.micState,
@@ -1515,7 +1750,9 @@ class _ChatInputBarState extends State<_ChatInputBar> {
     final theme = Theme.of(context);
     final controller = widget.controller;
     final isSending = widget.isSending;
+    final isStreaming = widget.isStreaming;
     final onSend = widget.onSend;
+    final onStop = widget.onStop;
     final onAttachment = widget.onAttachment;
     final onVoice = widget.onVoice;
 
@@ -1678,7 +1915,7 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                   duration: const Duration(milliseconds: 180),
                   curve: Curves.easeOut,
                   decoration: BoxDecoration(
-                    color: hasText || isSending
+                    color: hasText || isSending || isStreaming
                         ? theme.colorScheme.primary
                         : theme.colorScheme.primary.withOpacity(0.35),
                     shape: BoxShape.circle,
@@ -1688,34 +1925,56 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                     shape: const CircleBorder(),
                     child: InkWell(
                       customBorder: const CircleBorder(),
-                      onTap: isSending
-                          ? null
-                          : () {
+                      // Step 26: while a reply is streaming, this button
+                      // is a live Stop control instead of being disabled
+                      // — tapping it cancels generation immediately and
+                      // keeps whatever text has already arrived. Any
+                      // other in-flight send (e.g. processing/uploading
+                      // attachments, before a stream would even start)
+                      // still shows the plain disabled spinner as before.
+                      onTap: isStreaming
+                          ? () {
                               HapticFeedback.mediumImpact();
-                              onSend();
-                            },
+                              onStop();
+                            }
+                          : isSending
+                              ? null
+                              : () {
+                                  HapticFeedback.mediumImpact();
+                                  onSend();
+                                },
                       child: Padding(
                         padding: const EdgeInsets.all(11),
                         child: AnimatedSwitcher(
                           duration: const Duration(milliseconds: 180),
                           transitionBuilder: (child, animation) =>
                               ScaleTransition(scale: animation, child: child),
-                          child: isSending
-                              ? SizedBox(
-                                  key: const ValueKey('sending'),
-                                  width: 17,
-                                  height: 17,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
+                          child: isStreaming
+                              ? Container(
+                                  key: const ValueKey('stop'),
+                                  width: 12,
+                                  height: 12,
+                                  decoration: BoxDecoration(
                                     color: theme.colorScheme.onPrimary,
+                                    borderRadius: BorderRadius.circular(3),
                                   ),
                                 )
-                              : Icon(
-                                  Icons.arrow_upward_rounded,
-                                  key: const ValueKey('send'),
-                                  color: theme.colorScheme.onPrimary,
-                                  size: 20,
-                                ),
+                              : isSending
+                                  ? SizedBox(
+                                      key: const ValueKey('sending'),
+                                      width: 17,
+                                      height: 17,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: theme.colorScheme.onPrimary,
+                                      ),
+                                    )
+                                  : Icon(
+                                      Icons.arrow_upward_rounded,
+                                      key: const ValueKey('send'),
+                                      color: theme.colorScheme.onPrimary,
+                                      size: 20,
+                                    ),
                         ),
                       ),
                     ),

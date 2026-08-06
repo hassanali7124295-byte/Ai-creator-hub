@@ -34,14 +34,29 @@ class ChatBubble extends StatefulWidget {
   /// Deletes this message from the conversation.
   final VoidCallback? onDelete;
 
+  /// Re-asks Gemini for this same reply after it failed (Step 26 —
+  /// "Retry"). Only shown for error bubbles, and only wired up for the
+  /// most recent one — `null` renders no retry affordance at all.
+  final VoidCallback? onRetry;
+
   /// Whether this specific message is the one currently being read aloud.
   final bool isSpeaking;
 
   /// When true (and this is a fresh, non-error AI reply), the reply text
   /// is revealed gradually — a lightweight, client-side "streaming" effect
   /// — instead of appearing all at once. Historical replies loaded from
-  /// storage pass `false` so they render instantly, as before.
+  /// storage pass `false` so they render instantly, as before. Ignored
+  /// while [isLive] is true (see below).
   final bool animate;
+
+  /// Step 26: true while this exact message is being filled in live,
+  /// chunk-by-chunk, straight from Gemini's network stream (as opposed to
+  /// [animate]'s local, already-complete-text reveal). The bubble renders
+  /// whatever text has arrived so far immediately on every rebuild (no
+  /// local delay — the network is already pacing it), shows a "typing"
+  /// dot row until the first chunk lands, and keeps the action row hidden
+  /// until streaming finishes.
+  final bool isLive;
 
   /// Invoked on every reveal tick while streaming, so the screen can keep
   /// the list pinned to the bottom as the reply grows. Safe to leave null.
@@ -55,8 +70,10 @@ class ChatBubble extends StatefulWidget {
     this.onRegenerate,
     this.onReadAloud,
     this.onDelete,
+    this.onRetry,
     this.isSpeaking = false,
     this.animate = false,
+    this.isLive = false,
     this.onStreamTick,
   });
 
@@ -103,6 +120,14 @@ class _ChatBubbleState extends State<ChatBubble> {
 
   void _startOrSkipStreaming() {
     final length = widget.message.text.length;
+    // Step 26: a message being filled in live from the network is already
+    // paced by the stream itself — always show every character that has
+    // arrived, with no extra local delay on top.
+    if (widget.isLive) {
+      _visibleChars = length;
+      _streaming = false;
+      return;
+    }
     if (_isAiReply && widget.animate && length > 0) {
       _visibleChars = 0;
       _streaming = true;
@@ -196,7 +221,11 @@ class _ChatBubbleState extends State<ChatBubble> {
 
     // Step 18.4: the action row auto-appears for any settled AI reply as
     // soon as streaming finishes — no tap, long-press, or expand needed.
-    final showActions = isAiReply && !_streaming;
+    // Step 26: also held back while a live network stream is still
+    // filling this exact reply in.
+    final showActions = isAiReply && !_streaming && !widget.isLive;
+    final showLiveTypingDots =
+        isAiReply && widget.isLive && message.text.isEmpty;
 
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
@@ -296,10 +325,16 @@ class _ChatBubbleState extends State<ChatBubble> {
                       ],
                     ),
                   ),
+                // Step 26: before the first chunk of a live stream has
+                // arrived, show the same pulsing three-dot "typing" cue
+                // the old pre-reply indicator used, right inside the
+                // bubble that will hold the answer.
+                if (showLiveTypingDots)
+                  _LiveTypingDots(color: ChatPalette.userBubble)
                 // AI replies render as Markdown (bold, lists, code blocks,
                 // etc.) at a slightly larger size with roomier line
                 // spacing for readability; user/error text stays plain.
-                if (isAiReply)
+                else if (isAiReply)
                   MarkdownBody(
                     data: displayedText,
                     selectable: true,
@@ -404,7 +439,139 @@ class _ChatBubbleState extends State<ChatBubble> {
                     ),
                   ),
           ),
+          // Step 26: a failed reply gets a lightweight Retry chip in place
+          // of the (inapplicable) copy/share/regenerate row — only shown
+          // when the screen has wired one up, which it only does for the
+          // most recent message.
+          if (message.isError && widget.onRetry != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6, left: 2),
+              child: _RetryChip(onTap: widget.onRetry!),
+            ),
         ],
+      ),
+    );
+  }
+}
+
+/// Three small, pulsing dots shown inside a fresh AI bubble before the
+/// first chunk of a live network stream has arrived — the in-bubble
+/// equivalent of the old pre-reply [TypingIndicator], sized to sit
+/// naturally inside the bubble's own padding instead of floating above it.
+class _LiveTypingDots extends StatefulWidget {
+  final Color color;
+  const _LiveTypingDots({required this.color});
+
+  @override
+  State<_LiveTypingDots> createState() => _LiveTypingDotsState();
+}
+
+class _LiveTypingDotsState extends State<_LiveTypingDots>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Widget _dot(double phaseOffset) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final t = (_controller.value + phaseOffset) % 1.0;
+        final eased = Curves.easeInOutSine.transform(t);
+        final scale = 0.75 + (eased * 0.5);
+        final opacity = 0.35 + (eased * 0.65);
+        return Transform.scale(
+          scale: scale,
+          child: Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: widget.color.withOpacity(opacity),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _dot(0.0),
+          const SizedBox(width: 6),
+          _dot(0.15),
+          const SizedBox(width: 6),
+          _dot(0.3),
+        ],
+      ),
+    );
+  }
+}
+
+/// A small "Retry" chip shown under a failed AI reply (Step 26). Styled
+/// to match the app's emerald theme — no red/blue accent, just a subtle
+/// outlined pill with a refresh icon.
+class _RetryChip extends StatelessWidget {
+  final VoidCallback onTap;
+  const _RetryChip({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: () {
+          HapticFeedback.selectionClick();
+          onTap();
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: theme.colorScheme.primary.withOpacity(0.4),
+              width: 1.2,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.refresh_rounded,
+                size: 16,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                'Retry',
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: theme.colorScheme.primary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

@@ -273,6 +273,186 @@ Tone and formatting:
     }
   }
 
+  /// Streams [prompt]'s reply from Gemini as a sequence of incremental
+  /// text chunks (deltas — not cumulative), using the
+  /// `streamGenerateContent` SSE endpoint. This is what powers the live,
+  /// word-by-word "typing" effect in the chat UI (Step 26).
+  ///
+  /// Cancelling the returned stream's subscription (e.g. via the chat
+  /// screen's "Stop" button) aborts the underlying HTTP connection
+  /// immediately — the `finally` block below always runs, even on
+  /// cancellation, and closes the client.
+  ///
+  /// Only text-only turns go through this path; requests with image
+  /// attachments keep using [sendMessageWithImages] (batched, non-stream),
+  /// since merging several batches' analyses doesn't map onto a single
+  /// token stream.
+  static Stream<String> sendMessageStream(
+    String prompt, {
+    List<Map<String, String>> history = const [],
+    List<GeminiInlinePart> attachments = const [],
+    String? modeInstruction,
+  }) {
+    late StreamController<String> controller;
+    http.Client? client;
+
+    Future<void> run() async {
+      final apiKey = await getApiKey();
+      if (apiKey == null || apiKey.trim().isEmpty) {
+        controller.addError(GeminiException(
+          'No Gemini API key configured yet. Add one in Settings → Gemini API Key.',
+        ));
+        await controller.close();
+        return;
+      }
+
+      final uri =
+          Uri.parse('$_baseUrl/$_model:streamGenerateContent?alt=sse');
+
+      final systemText =
+          (modeInstruction != null && modeInstruction.trim().isNotEmpty)
+              ? '$_systemInstruction\n\n${modeInstruction.trim()}'
+              : _systemInstruction;
+
+      final contents = [
+        ...history.map(
+          (turn) => {
+            'role': turn['role'],
+            'parts': [
+              {'text': turn['text']}
+            ],
+          },
+        ),
+        {
+          'role': 'user',
+          'parts': [
+            {'text': prompt},
+            ...attachments.map((a) => a.toJson()),
+          ],
+        },
+      ];
+
+      final isHeavyRequest = attachments.isNotEmpty || prompt.length > 4000;
+      final requestTimeout = Duration(seconds: isHeavyRequest ? 60 : 30);
+
+      client = http.Client();
+      try {
+        final request = http.Request('POST', uri)
+          ..headers['Content-Type'] = 'application/json'
+          ..headers['x-goog-api-key'] = apiKey.trim()
+          ..body = jsonEncode({
+            'system_instruction': {
+              'parts': [
+                {'text': systemText}
+              ],
+            },
+            'contents': contents,
+          });
+
+        final streamedResponse =
+            await client!.send(request).timeout(requestTimeout);
+
+        if (streamedResponse.statusCode != 200) {
+          final body = await streamedResponse.stream
+              .transform(utf8.decoder)
+              .join()
+              .timeout(requestTimeout);
+          final hint = (streamedResponse.statusCode == 400 ||
+                  streamedResponse.statusCode == 403)
+              ? 'Gemini rejected the request (${streamedResponse.statusCode}). '
+                  'Double-check the API key in Settings.'
+              : 'Gemini API error (${streamedResponse.statusCode}): $body';
+          controller.addError(GeminiException(hint));
+          return;
+        }
+
+        var gotAnyText = false;
+        String? blockReason;
+        String? finishReason;
+
+        await for (final line in streamedResponse.stream
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())) {
+          final trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          final jsonStr = trimmed.substring(5).trim();
+          if (jsonStr.isEmpty || jsonStr == '[DONE]') continue;
+
+          Map<String, dynamic> decoded;
+          try {
+            decoded = jsonDecode(jsonStr) as Map<String, dynamic>;
+          } catch (_) {
+            continue; // Ignore any malformed/partial SSE frame.
+          }
+
+          final promptFeedback =
+              decoded['promptFeedback'] as Map<String, dynamic>?;
+          if (promptFeedback != null && promptFeedback['blockReason'] != null) {
+            blockReason = promptFeedback['blockReason'].toString();
+          }
+
+          final candidates = decoded['candidates'] as List<dynamic>?;
+          if (candidates == null || candidates.isEmpty) continue;
+
+          final candidate = candidates[0] as Map<String, dynamic>;
+          finishReason = candidate['finishReason'] as String? ?? finishReason;
+          final parts = candidate['content']?['parts'] as List<dynamic>?;
+          if (parts == null) continue;
+
+          for (final part in parts) {
+            final text = (part as Map<String, dynamic>)['text'];
+            if (text is String && text.isNotEmpty) {
+              gotAnyText = true;
+              controller.add(text);
+            }
+          }
+        }
+
+        if (!gotAnyText) {
+          if (blockReason != null) {
+            controller.addError(GeminiException(
+              'Gemini couldn\'t process this request (blocked: $blockReason). '
+              'Try a different file or rephrase your message.',
+            ));
+          } else if (finishReason == 'SAFETY' ||
+              finishReason == 'PROHIBITED_CONTENT') {
+            controller.addError(GeminiException(
+              'Gemini couldn\'t respond to this — it may have been blocked by '
+              'safety filters. Try rephrasing your message.',
+            ));
+          } else {
+            controller.addError(
+                GeminiException('Gemini returned an empty response.'));
+          }
+        }
+      } on TimeoutException {
+        controller.addError(GeminiException(
+          'Gemini is taking too long to respond. Check your connection and '
+          'try again.',
+        ));
+      } on GeminiException catch (e) {
+        controller.addError(e);
+      } catch (e) {
+        // A stream that's been cancelled by the listener closes the client
+        // out from under this loop, which surfaces here as a generic
+        // error — swallow it silently rather than reporting a spurious
+        // failure for what was actually a deliberate Stop tap.
+        if (!controller.isClosed) {
+          controller.addError(GeminiException('Could not reach Gemini: $e'));
+        }
+      } finally {
+        client?.close();
+        await controller.close();
+      }
+    }
+
+    controller = StreamController<String>(
+      onListen: () => unawaited(run()),
+      onCancel: () => client?.close(),
+    );
+    return controller.stream;
+  }
+
   // Step 24: how many images go into a single `sendMessage` request when
   // sending through [sendMessageWithImages]. Keeping each request at this
   // size is what keeps every individual batch fast and reliable — see the
@@ -281,33 +461,41 @@ Tone and formatting:
   static const int _kBatchSize = 5;
 
   /// Sends [prompt] together with [images] to Gemini, automatically
-  /// splitting more than [_kBatchSize] images into sequential batches of
-  /// [_kBatchSize], and merging every batch's reply into one final answer.
+  /// splitting more than [_kBatchSize] images into batches of
+  /// [_kBatchSize] and sending ALL batches simultaneously (Step 25 —
+  /// Parallel Batch Processing), then merging every successful batch's
+  /// reply into one final answer.
   ///
   /// This is the entry point [ChatScreen] uses for any send that includes
-  /// one or more image attachments (Step 24 — Smart Large Image Batch
-  /// Processing). [images] must already be compressed — this method makes
-  /// no changes to the bytes themselves, it only groups and paces the
-  /// requests. [otherAttachments] (e.g. a small generic text file sent
-  /// alongside images) always rides along with the first batch only, same
-  /// as before batching existed.
+  /// one or more image attachments. [images] must already be
+  /// compressed — this method makes no changes to the bytes themselves,
+  /// it only groups and dispatches the requests. [otherAttachments] (e.g.
+  /// a small generic text file sent alongside images) always rides along
+  /// with the first batch only, same as before batching existed.
   ///
   /// Image order is preserved exactly: images are split into batches in
-  /// the order given, batches are sent one after another (never in
-  /// parallel), and each batch's own images stay in order within it.
+  /// the order given, each batch's own images stay in order within it,
+  /// and batch replies are merged back together in that same original
+  /// batch order regardless of which batch's network request happens to
+  /// finish first.
   ///
-  /// If a batch's request fails, it is retried automatically exactly once.
-  /// If it still fails, that batch is skipped and the remaining batches
-  /// continue normally — a single bad/oversized image (or a transient
-  /// network hiccup) never sinks the whole request. Only if *every* batch
-  /// ultimately fails does this throw [GeminiException].
+  /// All batches are dispatched at once via [Future.wait] instead of one
+  /// after another — with several images this cuts total wait time down
+  /// to roughly the slowest single batch instead of the sum of all of
+  /// them. If a batch's request fails, it is retried automatically
+  /// exactly once. If it still fails, that batch is dropped and the
+  /// remaining batches' results are still used — a single bad/oversized
+  /// image (or a transient network hiccup) never sinks the whole request.
+  /// Only if *every* batch ultimately fails does this throw
+  /// [GeminiException].
   ///
   /// [onProgress], if given, is called as processing moves through each
-  /// stage — uploading, analyzing (once per batch, reporting which batch
-  /// number is in flight), then generating the merged final answer — so
-  /// the caller can show an accurate, professional status line the whole
-  /// time. It is never called for a plain no-image send (when [images] is
-  /// empty), since there's nothing to batch.
+  /// stage — uploading, analyzing (updated as each in-flight batch
+  /// completes, reporting how many of the total are done), then
+  /// generating the merged final answer — so the caller can show an
+  /// accurate, professional status line the whole time. It is never
+  /// called for a plain no-image send (when [images] is empty), since
+  /// there's nothing to batch.
   static Future<String> sendMessageWithImages(
     String prompt, {
     List<Map<String, String>> history = const [],
@@ -341,28 +529,40 @@ Tone and formatting:
         totalBatches: totalBatches,
       ),
     );
+    onProgress?.call(
+      GeminiBatchProgress(
+        stage: GeminiBatchStage.analyzing,
+        currentBatch: 0,
+        totalBatches: totalBatches,
+      ),
+    );
 
-    final batchReplies = <String>[];
+    // Results are written into a fixed-size, index-aligned slot per batch
+    // so the original image/batch order survives no matter which batch's
+    // request actually completes first — only the merge step below reads
+    // this list, and it always reads it front-to-back.
+    final results = List<String?>.filled(totalBatches, null);
     GeminiException? lastFailure;
+    var completedBatches = 0;
 
-    for (var i = 0; i < batches.length; i++) {
-      onProgress?.call(
-        GeminiBatchProgress(
-          stage: GeminiBatchStage.analyzing,
-          currentBatch: i + 1,
-          totalBatches: totalBatches,
-        ),
-      );
-
-      // Only the first batch carries any non-image attachment (e.g. a
-      // small text file), and only the first batch is asked to also
-      // account for it — same as the pre-Step-24 single-request behavior.
+    // Step 25: every batch's request (including its own automatic retry)
+    // is wrapped in its own `Future` and they're all started here, up
+    // front, then awaited together via `Future.wait` — so all batches are
+    // genuinely in flight at the same time instead of one finishing
+    // before the next starts. `async`/`await` never blocks the UI thread
+    // either way; this only changes *when* each batch's HTTP request is
+    // fired off.
+    Future<void> runBatch(int index) async {
       final batchAttachments = [
-        ...batches[i],
-        if (i == 0) ...otherAttachments,
+        ...batches[index],
+        // Only the first batch carries any non-image attachment (e.g. a
+        // small text file), and only the first batch is asked to also
+        // account for it — same as the pre-Step-24 single-request
+        // behavior.
+        if (index == 0) ...otherAttachments,
       ];
       final batchPrompt = totalBatches > 1
-          ? 'These are images ${i + 1} of $totalBatches batches from a '
+          ? 'These are images ${index + 1} of $totalBatches batches from a '
               'single request — analyze only what is visible in this batch. '
               'Your analysis will be combined with the other batches into '
               'one final answer, so be thorough and specific about what you '
@@ -382,14 +582,30 @@ Tone and formatting:
         } on GeminiException catch (e) {
           lastFailure = e;
           // First failure: retry this same batch once automatically.
-          // Second failure: fall through and move on to the next batch.
+          // Second failure: fall through and move on — the other
+          // batches, running in parallel, are unaffected.
         }
       }
 
       if (reply != null) {
-        batchReplies.add(reply);
+        results[index] = reply;
       }
+
+      completedBatches++;
+      onProgress?.call(
+        GeminiBatchProgress(
+          stage: GeminiBatchStage.analyzing,
+          currentBatch: completedBatches,
+          totalBatches: totalBatches,
+        ),
+      );
     }
+
+    await Future.wait(
+      List.generate(totalBatches, (index) => runBatch(index)),
+    );
+
+    final batchReplies = results.whereType<String>().toList(growable: false);
 
     if (batchReplies.isEmpty) {
       throw lastFailure ??
@@ -411,7 +627,7 @@ Tone and formatting:
       ..writeln(
         'You separately analyzed ${batchReplies.length} batch(es) of '
         'images that are all part of one request. Here is each batch\'s '
-        'analysis:',
+        'analysis, in the original image order:',
       );
     for (var i = 0; i < batchReplies.length; i++) {
       mergePrompt
