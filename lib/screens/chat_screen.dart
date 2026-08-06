@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/services.dart';
@@ -25,6 +26,7 @@ import '../widgets/attachment_sheet.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/conversation_drawer.dart';
 import '../widgets/typing_indicator.dart';
+import 'profile_screen.dart';
 import 'settings_screen.dart';
 
 /// Step 18.5: the mic button's three states — idle (normal mic icon),
@@ -127,6 +129,10 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _inputController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final List<ChatMessage> _messages = [];
+  // Step 27A: owned here (instead of inside `_ChatInputBar`) so the
+  // premium home screen's search card can hand focus straight to the
+  // real composer below it — purely a UI convenience, no send-path change.
+  final FocusNode _composerFocusNode = FocusNode();
 
   bool _isSending = false;
   bool _isLoadingHistory = true;
@@ -334,6 +340,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     _inputController.dispose();
+    _composerFocusNode.dispose();
     _scrollController.removeListener(_onScrollChanged);
     _scrollController.dispose();
     VoiceManager.instance.removeListener(_onVoiceStateChanged);
@@ -1149,6 +1156,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _inputController.text = text;
     _inputController.selection =
         TextSelection.collapsed(offset: text.length);
+    _composerFocusNode.requestFocus();
   }
 
   /// Opens the AI Modes sheet and applies the chosen mode, if any, to the
@@ -1261,6 +1269,13 @@ class _ChatScreenState extends State<ChatScreen> {
       (p) => p.current?.title ?? 'AI Chat',
     );
 
+    // Step 27A: "Home" is the empty-conversation landing state — it gets
+    // the new premium top bar (logo + crescent mark + avatar + settings).
+    // The moment a conversation has messages, the original functional
+    // chat app bar (live title, new chat, clear chat) takes back over,
+    // completely unchanged.
+    final isHome = _messages.isEmpty && !_isLoadingHistory;
+
     return Theme(
       data: theme,
       child: Scaffold(
@@ -1269,60 +1284,9 @@ class _ChatScreenState extends State<ChatScreen> {
           onSelect: _switchConversation,
           onNewChat: _startNewChat,
         ),
-        appBar: AppBar(
-          leadingWidth: 56,
-          scrolledUnderElevation: 0,
-          leading: Builder(
-            builder: (context) => Center(
-              child: _AppBarIconButton(
-                tooltip: 'Menu',
-                icon: Icons.menu_rounded,
-                onTap: () {
-                  HapticFeedback.selectionClick();
-                  Scaffold.of(context).openDrawer();
-                },
-              ),
-            ),
-          ),
-          titleSpacing: 4,
-          title: Text(
-            _isLoadingHistory ? 'AI Chat' : conversationTitle,
-            style: theme.textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-              letterSpacing: -0.2,
-            ),
-            overflow: TextOverflow.ellipsis,
-          ),
-          actions: [
-            _AppBarIconButton(
-              tooltip: 'New chat',
-              icon: Icons.mode_edit_outline_rounded,
-              onTap: () {
-                HapticFeedback.selectionClick();
-                _startNewChat();
-              },
-            ),
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 200),
-              transitionBuilder: (child, animation) => ScaleTransition(
-                scale: animation,
-                child: FadeTransition(opacity: animation, child: child),
-              ),
-              child: _messages.isNotEmpty
-                  ? _AppBarIconButton(
-                      key: const ValueKey('clear-chat'),
-                      tooltip: 'Clear chat',
-                      icon: Icons.delete_outline_rounded,
-                      onTap: () {
-                        HapticFeedback.mediumImpact();
-                        _clearChat();
-                      },
-                    )
-                  : const SizedBox(width: 12, key: ValueKey('clear-chat-empty')),
-            ),
-            const SizedBox(width: 6),
-          ],
-        ),
+        appBar: isHome
+            ? _buildHomeAppBar(theme)
+            : _buildChatAppBar(theme, conversationTitle),
         body: Column(
           children: [
             if (!_hasApiKey) _ApiKeyBanner(onSetUp: _openSettings),
@@ -1337,10 +1301,13 @@ class _ChatScreenState extends State<ChatScreen> {
                       switchInCurve: Curves.easeOut,
                       switchOutCurve: Curves.easeIn,
                       child: _messages.isEmpty
-                          ? _EmptyState(
+                          ? _PremiumHomeContent(
                               key: ValueKey('empty-$_conversationId'),
                               theme: theme,
                               onSuggestionTap: _applySuggestion,
+                              onComposerTap: _composerFocusNode.requestFocus,
+                              onVoiceTap: _onVoiceTap,
+                              onAttachmentTap: _openAttachmentSheet,
                             )
                           : NotificationListener<ScrollNotification>(
                               key: ValueKey('list-$_conversationId'),
@@ -1488,6 +1455,7 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             _ChatInputBar(
               controller: _inputController,
+              focusNode: _composerFocusNode,
               isSending: _isSending,
               isStreaming: _isStreaming,
               onSend: _sendMessage,
@@ -1499,6 +1467,160 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  /// The original functional chat header — live conversation title, new
+  /// chat, clear chat. Untouched by Step 27A; only shown once a
+  /// conversation has messages.
+  PreferredSizeWidget _buildChatAppBar(ThemeData theme, String conversationTitle) {
+    return AppBar(
+      leadingWidth: 56,
+      scrolledUnderElevation: 0,
+      leading: Builder(
+        builder: (context) => Center(
+          child: _AppBarIconButton(
+            tooltip: 'Menu',
+            icon: Icons.menu_rounded,
+            onTap: () {
+              HapticFeedback.selectionClick();
+              Scaffold.of(context).openDrawer();
+            },
+          ),
+        ),
+      ),
+      titleSpacing: 4,
+      title: Text(
+        _isLoadingHistory ? 'AI Chat' : conversationTitle,
+        style: theme.textTheme.titleMedium?.copyWith(
+          fontWeight: FontWeight.w600,
+          letterSpacing: -0.2,
+        ),
+        overflow: TextOverflow.ellipsis,
+      ),
+      actions: [
+        _AppBarIconButton(
+          tooltip: 'New chat',
+          icon: Icons.mode_edit_outline_rounded,
+          onTap: () {
+            HapticFeedback.selectionClick();
+            _startNewChat();
+          },
+        ),
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 200),
+          transitionBuilder: (child, animation) => ScaleTransition(
+            scale: animation,
+            child: FadeTransition(opacity: animation, child: child),
+          ),
+          child: _messages.isNotEmpty
+              ? _AppBarIconButton(
+                  key: const ValueKey('clear-chat'),
+                  tooltip: 'Clear chat',
+                  icon: Icons.delete_outline_rounded,
+                  onTap: () {
+                    HapticFeedback.mediumImpact();
+                    _clearChat();
+                  },
+                )
+              : const SizedBox(width: 12, key: ValueKey('clear-chat-empty')),
+        ),
+        const SizedBox(width: 6),
+      ],
+    );
+  }
+
+  /// Step 27A: the premium home top bar — drawer, "Pak AI" wordmark with a
+  /// small crescent mark, profile avatar, and settings — shown only on the
+  /// empty-conversation landing state. Every action here re-uses an
+  /// existing, already-wired handler (`Scaffold.openDrawer`, `_openSettings`,
+  /// the `ProfileScreen` route already used by the drawer) — no new
+  /// navigation or business logic.
+  PreferredSizeWidget _buildHomeAppBar(ThemeData theme) {
+    return AppBar(
+      leadingWidth: 56,
+      scrolledUnderElevation: 0,
+      leading: Builder(
+        builder: (context) => Center(
+          child: _AppBarIconButton(
+            tooltip: 'Menu',
+            icon: Icons.menu_rounded,
+            onTap: () {
+              HapticFeedback.selectionClick();
+              Scaffold.of(context).openDrawer();
+            },
+          ),
+        ),
+      ),
+      titleSpacing: 4,
+      title: FadeIn(
+        duration: const Duration(milliseconds: 300),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 30,
+              height: 30,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    theme.colorScheme.primary,
+                    const Color(0xFF066B47),
+                  ],
+                ),
+              ),
+              child: const Icon(Icons.auto_awesome_rounded,
+                  size: 16, color: Colors.white),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              'Pak AI',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.2,
+              ),
+            ),
+            const SizedBox(width: 5),
+            Icon(
+              Icons.nightlight_round,
+              size: 13,
+              color: theme.colorScheme.primary.withOpacity(0.65),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        Tooltip(
+          message: 'Profile',
+          child: InkWell(
+            borderRadius: BorderRadius.circular(20),
+            onTap: () {
+              HapticFeedback.selectionClick();
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const ProfileScreen()),
+              );
+            },
+            child: CircleAvatar(
+              radius: 16,
+              backgroundColor: theme.colorScheme.primary.withOpacity(0.12),
+              child: Icon(Icons.person_rounded,
+                  size: 18, color: theme.colorScheme.primary),
+            ),
+          ),
+        ),
+        _AppBarIconButton(
+          tooltip: 'Settings',
+          icon: Icons.settings_outlined,
+          onTap: () {
+            HapticFeedback.selectionClick();
+            _openSettings();
+          },
+        ),
+        const SizedBox(width: 6),
+      ],
     );
   }
 }
@@ -1714,101 +1836,208 @@ class _ApiKeyBanner extends StatelessWidget {
   }
 }
 
-/// A clean, minimal "empty chat" welcome screen in the style of Meta AI:
-/// a bold left-aligned heading, generous empty space, and a handful of
-/// small outlined suggestion chips — no crowded card list.
-class _EmptyState extends StatelessWidget {
+/// Step 27A — Premium Home Screen (UI only).
+///
+/// Replaces the old plain "empty chat" welcome view with a full landing
+/// screen: time-aware greeting, a tappable "search card" that hands off
+/// to the real composer below, and a 2-column grid of quick-action cards
+/// that pre-fill a prompt into that same composer. Nothing here sends a
+/// message, calls the API, or touches routing — every action bottoms out
+/// in an existing, already-wired callback (`onSuggestionTap` /
+/// `_applySuggestion`, `onVoiceTap` / `_onVoiceTap`, `onAttachmentTap` /
+/// `_openAttachmentSheet`).
+class _PremiumHomeContent extends StatelessWidget {
   final ThemeData theme;
-
-  /// Invoked with a suggestion's prompt text when its chip is tapped.
-  /// Only fills the composer — sending still goes through the normal
-  /// input bar, so this stays a pure UI convenience.
   final ValueChanged<String> onSuggestionTap;
+  final VoidCallback onComposerTap;
+  final VoidCallback onVoiceTap;
+  final VoidCallback onAttachmentTap;
 
-  const _EmptyState({super.key, required this.theme, required this.onSuggestionTap});
+  const _PremiumHomeContent({
+    super.key,
+    required this.theme,
+    required this.onSuggestionTap,
+    required this.onComposerTap,
+    required this.onVoiceTap,
+    required this.onAttachmentTap,
+  });
 
-  // Step 12.3: was 5 large cards ("Ask questions", "Generate images",
-  // "Write scripts", "Solve problems", "Create content") — trimmed to 4
-  // short prompts that read as quick-tap chips rather than a menu.
-  static const List<String> _suggestions = [
-    'Ask a question',
-    'Brainstorm ideas',
-    'Write a script',
-    'Summarize a file',
+  static const List<_QuickAction> _actions = [
+    _QuickAction('Ask Question', Icons.chat_bubble_outline_rounded,
+        'I have a question about '),
+    _QuickAction('Brainstorm', Icons.lightbulb_outline_rounded,
+        'Help me brainstorm ideas for '),
+    _QuickAction('Write Script', Icons.movie_creation_outlined,
+        'Write a script about '),
+    _QuickAction('Explain Image', Icons.image_outlined,
+        'Explain what is happening in this image'),
+    _QuickAction('Summarize PDF', Icons.picture_as_pdf_outlined,
+        'Summarize this PDF for me'),
+    _QuickAction(
+        'Translate', Icons.translate_rounded, 'Translate this into '),
+    _QuickAction('Generate Code', Icons.code_rounded,
+        'Write code that '),
+    _QuickAction(
+        'Math Solver', Icons.functions_rounded, 'Help me solve this problem: '),
+    _QuickAction('Study Helper', Icons.school_outlined,
+        'Help me study '),
   ];
+
+  String get _greeting {
+    final hour = DateTime.now().hour;
+    if (hour < 12) return 'Good Morning';
+    if (hour < 17) return 'Good Afternoon';
+    return 'Good Evening';
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(28, 36, 28, 24),
-      // Step 12.3: content is now anchored top-left instead of centered —
-      // centering was a big part of why the old screen felt like a
-      // crowded, busy "menu" rather than a calm, premium landing state.
-      child: Align(
-        alignment: Alignment.topLeft,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            FadeInUp(
-              duration: const Duration(milliseconds: 420),
-              child: Text(
-                'What can I do\nfor you?',
-                style: theme.textTheme.headlineMedium?.copyWith(
-                  fontWeight: FontWeight.w800,
-                  height: 1.15,
-                  letterSpacing: -0.6,
-                ),
-                textAlign: TextAlign.left,
-              ),
+    return Stack(
+      children: [
+        // Very faint background watermark — a soft, oversized map glyph
+        // sitting behind everything at ~5% opacity. Purely decorative.
+        Positioned(
+          right: -60,
+          bottom: -40,
+          child: Opacity(
+            opacity: 0.05,
+            child: Icon(
+              Icons.map_rounded,
+              size: 340,
+              color: theme.colorScheme.primary,
             ),
-            // Step 12.3: a much bigger gap under the heading — the old
-            // screen had only 28px before the first card; this breathing
-            // room is what makes the screen feel spacious rather than
-            // packed.
-            const SizedBox(height: 40),
-            FadeInUp(
-              duration: const Duration(milliseconds: 420),
-              delay: const Duration(milliseconds: 90),
-              child: Wrap(
-                alignment: WrapAlignment.start,
-                spacing: 10,
-                runSpacing: 10,
-                children: [
-                  for (final suggestion in _suggestions)
-                    _SuggestionChip(
-                      label: suggestion,
-                      theme: theme,
-                      onTap: () => onSuggestionTap(suggestion),
-                    ),
-                ],
-              ),
-            ),
-          ],
+          ),
         ),
-      ),
+        SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(22, 20, 22, 24),
+          physics: const BouncingScrollPhysics(
+            parent: AlwaysScrollableScrollPhysics(),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              FadeInUp(
+                duration: const Duration(milliseconds: 420),
+                child: Text(
+                  '$_greeting 👋',
+                  style: theme.textTheme.headlineMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -0.6,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              FadeInUp(
+                duration: const Duration(milliseconds: 420),
+                delay: const Duration(milliseconds: 60),
+                child: Text(
+                  'How can Pak AI help you today?',
+                  style: theme.textTheme.bodyLarge?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              FadeInUp(
+                duration: const Duration(milliseconds: 420),
+                delay: const Duration(milliseconds: 100),
+                child: Text(
+                  'Fast  •  Private  •  Intelligent',
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    color: theme.colorScheme.primary,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.2,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 26),
+              FadeInUp(
+                duration: const Duration(milliseconds: 460),
+                delay: const Duration(milliseconds: 140),
+                child: _HomeSearchCard(
+                  theme: theme,
+                  onTap: onComposerTap,
+                  onVoiceTap: onVoiceTap,
+                  onCameraTap: onAttachmentTap,
+                  onUploadTap: onAttachmentTap,
+                ),
+              ),
+              const SizedBox(height: 28),
+              FadeInUp(
+                duration: const Duration(milliseconds: 460),
+                delay: const Duration(milliseconds: 180),
+                child: Text(
+                  'Quick actions',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.1,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: _actions.length,
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  mainAxisSpacing: 12,
+                  crossAxisSpacing: 12,
+                  childAspectRatio: 2.5,
+                ),
+                itemBuilder: (context, index) {
+                  final action = _actions[index];
+                  return FadeInUp(
+                    duration: const Duration(milliseconds: 420),
+                    delay: Duration(milliseconds: 40 * index),
+                    child: _QuickActionCard(
+                      theme: theme,
+                      action: action,
+                      onTap: () => onSuggestionTap(action.prompt),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
 
-/// A small, rounded, outlined suggestion chip — Meta AI style: no fill,
-/// just a soft border, compact padding, and a quiet press animation.
-class _SuggestionChip extends StatefulWidget {
+class _QuickAction {
   final String label;
+  final IconData icon;
+  final String prompt;
+  const _QuickAction(this.label, this.icon, this.prompt);
+}
+
+/// The large rounded "Ask anything..." card. Tapping the body (or the
+/// hint text) just hands focus to the real composer at the bottom of the
+/// screen; the three bottom-row icons re-use the same voice/attachment
+/// handlers already wired to the composer, so behavior is identical no
+/// matter which entry point the person taps.
+class _HomeSearchCard extends StatefulWidget {
   final ThemeData theme;
   final VoidCallback onTap;
+  final VoidCallback onVoiceTap;
+  final VoidCallback onCameraTap;
+  final VoidCallback onUploadTap;
 
-  const _SuggestionChip({
-    required this.label,
+  const _HomeSearchCard({
     required this.theme,
     required this.onTap,
+    required this.onVoiceTap,
+    required this.onCameraTap,
+    required this.onUploadTap,
   });
 
   @override
-  State<_SuggestionChip> createState() => _SuggestionChipState();
+  State<_HomeSearchCard> createState() => _HomeSearchCardState();
 }
 
-class _SuggestionChipState extends State<_SuggestionChip> {
+class _HomeSearchCardState extends State<_HomeSearchCard> {
   bool _pressed = false;
 
   void _setPressed(bool value) {
@@ -1818,38 +2047,222 @@ class _SuggestionChipState extends State<_SuggestionChip> {
   @override
   Widget build(BuildContext context) {
     final theme = widget.theme;
+    final isDark = theme.brightness == Brightness.dark;
+    return GestureDetector(
+      onTapDown: (_) => _setPressed(true),
+      onTapCancel: () => _setPressed(false),
+      onTapUp: (_) => _setPressed(false),
+      onTap: () {
+        HapticFeedback.selectionClick();
+        widget.onTap();
+      },
+      child: AnimatedScale(
+        scale: _pressed ? 0.985 : 1.0,
+        duration: const Duration(milliseconds: 120),
+        curve: Curves.easeOut,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(26),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(18, 16, 14, 12),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHigh
+                    .withOpacity(isDark ? 0.55 : 0.72),
+                borderRadius: BorderRadius.circular(26),
+                border: Border.all(
+                  color: Colors.white.withOpacity(isDark ? 0.06 : 0.5),
+                  width: 1.2,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: theme.colorScheme.shadow.withOpacity(0.08),
+                    blurRadius: 24,
+                    offset: const Offset(0, 10),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.search_rounded,
+                          color: theme.colorScheme.onSurfaceVariant, size: 22),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Ask anything...',
+                          style: theme.textTheme.bodyLarge?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant
+                                .withOpacity(0.8),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Divider(
+                    height: 1,
+                    color: theme.colorScheme.outlineVariant.withOpacity(0.4),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      _SearchCardIcon(
+                        icon: Icons.mic_none_rounded,
+                        label: 'Voice',
+                        theme: theme,
+                        onTap: widget.onVoiceTap,
+                      ),
+                      _SearchCardIcon(
+                        icon: Icons.photo_camera_outlined,
+                        label: 'Camera',
+                        theme: theme,
+                        onTap: widget.onCameraTap,
+                      ),
+                      _SearchCardIcon(
+                        icon: Icons.upload_file_outlined,
+                        label: 'Upload',
+                        theme: theme,
+                        onTap: widget.onUploadTap,
+                        isLast: true,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SearchCardIcon extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final ThemeData theme;
+  final VoidCallback onTap;
+  final bool isLast;
+
+  const _SearchCardIcon({
+    required this.icon,
+    required this.label,
+    required this.theme,
+    required this.onTap,
+    this.isLast = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(left: isLast ? 6 : 0, right: isLast ? 0 : 6),
+      child: Tooltip(
+        message: label,
+        child: Material(
+          color: theme.colorScheme.primary.withOpacity(0.10),
+          shape: const CircleBorder(),
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: () {
+              HapticFeedback.selectionClick();
+              onTap();
+            },
+            child: Padding(
+              padding: const EdgeInsets.all(9),
+              child: Icon(icon, size: 19, color: theme.colorScheme.primary),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One glassy 2-column quick-action card in the grid — icon + label,
+/// tapping it just pre-fills the composer via [onTap] (wired to
+/// `_applySuggestion`/`onSuggestionTap` from the parent).
+class _QuickActionCard extends StatefulWidget {
+  final ThemeData theme;
+  final _QuickAction action;
+  final VoidCallback onTap;
+
+  const _QuickActionCard({
+    required this.theme,
+    required this.action,
+    required this.onTap,
+  });
+
+  @override
+  State<_QuickActionCard> createState() => _QuickActionCardState();
+}
+
+class _QuickActionCardState extends State<_QuickActionCard> {
+  bool _pressed = false;
+
+  void _setPressed(bool value) {
+    if (_pressed != value) setState(() => _pressed = value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = widget.theme;
+    final isDark = theme.brightness == Brightness.dark;
     return GestureDetector(
       onTapDown: (_) => _setPressed(true),
       onTapCancel: () => _setPressed(false),
       onTapUp: (_) => _setPressed(false),
       child: AnimatedScale(
-        scale: _pressed ? 0.96 : 1.0,
+        scale: _pressed ? 0.95 : 1.0,
         duration: const Duration(milliseconds: 120),
         curve: Curves.easeOut,
         child: Material(
-          color: Colors.transparent,
-          borderRadius: BorderRadius.circular(20),
+          color: theme.colorScheme.surfaceContainerHigh
+              .withOpacity(isDark ? 0.55 : 0.85),
+          borderRadius: BorderRadius.circular(22),
           child: InkWell(
-            borderRadius: BorderRadius.circular(20),
+            borderRadius: BorderRadius.circular(22),
             onTap: () {
               HapticFeedback.selectionClick();
               widget.onTap();
             },
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(20),
+                borderRadius: BorderRadius.circular(22),
                 border: Border.all(
-                  color: theme.colorScheme.outlineVariant.withOpacity(0.7),
-                  width: 1.2,
+                  color: Colors.white.withOpacity(isDark ? 0.05 : 0.5),
+                  width: 1,
                 ),
               ),
-              child: Text(
-                widget.label,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  fontWeight: FontWeight.w500,
-                  color: theme.colorScheme.onSurface,
-                ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 34,
+                    height: 34,
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.primary.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(widget.action.icon,
+                        size: 18, color: theme.colorScheme.primary),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      widget.action.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: -0.1,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -1864,6 +2277,10 @@ class _SuggestionChipState extends State<_SuggestionChip> {
 /// button, and a circular send button.
 class _ChatInputBar extends StatefulWidget {
   final TextEditingController controller;
+  // Step 27A: optional external focus node so the premium home screen's
+  // search card can request focus straight into this field. Falls back
+  // to an internally-owned one, exactly as before, if not supplied.
+  final FocusNode? focusNode;
   final bool isSending;
   // Step 26: true while a reply is actively streaming in — swaps the
   // Send button for a Stop button (tapping it keeps whatever text has
@@ -1877,6 +2294,7 @@ class _ChatInputBar extends StatefulWidget {
 
   const _ChatInputBar({
     required this.controller,
+    this.focusNode,
     required this.isSending,
     required this.isStreaming,
     required this.onSend,
@@ -1893,7 +2311,11 @@ class _ChatInputBar extends StatefulWidget {
 class _ChatInputBarState extends State<_ChatInputBar> {
   // Step 12.2: drives a subtle border/glow animation so the input pill
   // visibly "wakes up" on focus, matching ChatGPT/Meta AI's composer.
-  final FocusNode _focusNode = FocusNode();
+  // Step 27A: uses the externally-supplied node when given (so the home
+  // screen's search card can hand off focus here) and only owns/disposes
+  // one itself as a fallback.
+  late final FocusNode _focusNode = widget.focusNode ?? FocusNode();
+  bool get _ownsFocusNode => widget.focusNode == null;
   bool _focused = false;
 
   @override
@@ -1907,7 +2329,7 @@ class _ChatInputBarState extends State<_ChatInputBar> {
   void dispose() {
     widget.controller.removeListener(_onTextChanged);
     _focusNode.removeListener(_onFocusChanged);
-    _focusNode.dispose();
+    if (_ownsFocusNode) _focusNode.dispose();
     super.dispose();
   }
 
