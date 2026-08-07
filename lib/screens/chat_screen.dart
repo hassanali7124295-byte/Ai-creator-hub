@@ -26,7 +26,6 @@ import '../widgets/attachment_sheet.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/conversation_drawer.dart';
 import '../widgets/pak_home_widgets.dart';
-import '../widgets/typing_indicator.dart';
 import 'settings_screen.dart';
 
 /// Step 18.5: the mic button's three states — idle (normal mic icon),
@@ -202,18 +201,17 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _attachmentsLocked = false;
 
   // Step 23: true only while a send with at least one image attachment is
-  // in flight — drives the status shown in place of the plain typing
-  // indicator (see `_AnalyzingIndicator` below), so the person gets an
-  // accurate, professional sense of what's taking a moment instead of a
-  // generic "typing" dot animation.
+  // in flight — drives the status shown by the live status line (see
+  // `_LiveStatus` below), so the person gets an accurate, professional
+  // sense of what's taking a moment instead of a generic "typing" dot
+  // animation.
   bool _sendingHasImages = false;
 
   // Step 24: which stage a large-image-batch send is currently in —
   // updated live via `GeminiService.sendMessageWithImages`'s `onProgress`
-  // callback so `_AnalyzingIndicator` can show "Uploading images...",
-  // "Analyzing images (Batch X of Y)...", or "Generating final answer..."
-  // as it happens, instead of one static label for the whole wait. Null
-  // whenever `_sendingHasImages` is false.
+  // callback so `_LiveStatus` can show "Reading...", "Analyzing (Batch X
+  // of Y)...", or "Writing..." as it happens, instead of one static label
+  // for the whole wait. Null whenever `_sendingHasImages` is false.
   GeminiBatchStage? _sendStage;
   int _sendBatchCurrent = 0;
   int _sendBatchTotal = 0;
@@ -416,14 +414,19 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  /// Step 26.1: the floating "↓ Jump to Latest" pill, shown only while
-  /// auto-scroll is paused AND fresh text has actually arrived below the
-  /// fold (`_newContentWhilePaused`) — not merely because the person has
-  /// scrolled up to reread something. Lives in a `Positioned` overlay (not
-  /// in the list's own layout flow) and only ever fades/slides in place,
-  /// so its appearance never shifts or jitters the message list itself.
+  /// Step 26.1 / Step 31: the floating "Jump to Latest" control, shown
+  /// only while auto-scroll is paused AND fresh text has actually arrived
+  /// below the fold (`_newContentWhilePaused`) — not merely because the
+  /// person has scrolled up to reread something. Lives in a `Positioned`
+  /// overlay (not in the list's own layout flow) and only ever
+  /// fades/slides in place, so its appearance never shifts or jitters the
+  /// message list itself. Step 31 restyled it from a labeled capsule pill
+  /// to a small circular icon-only button (44dp) — same visibility logic,
+  /// same tap target/handler, same fade+slide entrance, unchanged
+  /// scrolling behavior.
   Widget _buildJumpToLatestButton(ThemeData theme) {
     final visible = !_followBottom && _newContentWhilePaused;
+    const double size = 44;
     return Positioned(
       left: 0,
       right: 0,
@@ -440,33 +443,20 @@ class _ChatScreenState extends State<ChatScreen> {
               curve: Curves.easeOut,
               opacity: visible ? 1 : 0,
               child: Material(
-                color: theme.colorScheme.primary,
+                color: _PakHome.emerald.withOpacity(0.85),
                 elevation: 3,
                 shadowColor: Colors.black.withOpacity(0.25),
-                borderRadius: BorderRadius.circular(20),
+                shape: const CircleBorder(),
                 child: InkWell(
-                  borderRadius: BorderRadius.circular(20),
+                  customBorder: const CircleBorder(),
                   onTap: _jumpToLatest,
-                  child: Padding(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.arrow_downward_rounded,
-                          size: 16,
-                          color: theme.colorScheme.onPrimary,
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          'Jump to Latest',
-                          style: theme.textTheme.labelMedium?.copyWith(
-                            color: theme.colorScheme.onPrimary,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
+                  child: const SizedBox(
+                    width: size,
+                    height: size,
+                    child: Icon(
+                      Icons.arrow_downward_rounded,
+                      size: 20,
+                      color: Colors.white,
                     ),
                   ),
                 ),
@@ -1400,18 +1390,19 @@ class _ChatScreenState extends State<ChatScreen> {
                                   (_isSending && !_isStreaming ? 1 : 0),
                               itemBuilder: (context, index) {
                                 if (index == _messages.length) {
-                                  // Step 23: while analyzing image
-                                  // attachments specifically, swap the
-                                  // generic typing dots for a status line
-                                  // that sets accurate expectations for the
-                                  // longer image-analysis wait.
-                                  return _sendingHasImages
-                                      ? _AnalyzingIndicator(
-                                          stage: _sendStage,
-                                          currentBatch: _sendBatchCurrent,
-                                          totalBatches: _sendBatchTotal,
-                                        )
-                                      : const TypingIndicator();
+                                  // Step 23 / Step 31: a single premium
+                                  // "live status" line (small pulsing green
+                                  // dot + short label) replaces both the
+                                  // old gray typing-dots bubble and the old
+                                  // image-analysis status row — the label
+                                  // just reflects whichever real generation
+                                  // stage is active.
+                                  return _LiveStatus(
+                                    hasImages: _sendingHasImages,
+                                    stage: _sendStage,
+                                    currentBatch: _sendBatchCurrent,
+                                    totalBatches: _sendBatchTotal,
+                                  );
                                 }
                                 final message = _messages[index];
                                 final isAiReply =
@@ -1541,61 +1532,100 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
-/// Step 23/24: shown in place of the plain [TypingIndicator] while a send
-/// with image attachments is in flight — the same pulsing dots, plus a
-/// short status line, so waiting on a multi-image analysis (which can
-/// legitimately take a while — see the 180s image timeout in
-/// `GeminiService`) reads as "working on it" rather than looking stuck.
+/// Step 23/24/31: shown in the message list while a send is in flight and
+/// no stream has started yet — replaces the old gray "typing dots" bubble
+/// (and the separate image-analysis status row) with a single premium,
+/// bubble-free live status: a small pulsing green dot beside a short label
+/// that reflects whichever real generation stage is active. There's no
+/// hidden "searching" stage in the current pipeline (only upload/analyze/
+/// generate for image sends, plus the plain wait for a text-only send), so
+/// only real states are ever shown — nothing is fabricated.
 ///
-/// Step 24: the status line now tracks [stage] live as a large image set
-/// moves through uploading → analyzing (one or more batches) →
-/// generating the merged final answer, instead of one static label for
-/// the whole wait — see `GeminiService.sendMessageWithImages`'s
-/// `onProgress` callback, which is what drives these values.
-class _AnalyzingIndicator extends StatelessWidget {
+/// Step 24's per-batch tracking is unchanged: as a large image set moves
+/// through uploading → analyzing (one or more batches) → generating the
+/// merged final answer, the label keeps pace — see
+/// `GeminiService.sendMessageWithImages`'s `onProgress` callback, which is
+/// what drives these values.
+class _LiveStatus extends StatefulWidget {
+  final bool hasImages;
   final GeminiBatchStage? stage;
   final int currentBatch;
   final int totalBatches;
 
-  const _AnalyzingIndicator({
+  const _LiveStatus({
+    this.hasImages = false,
     this.stage,
     this.currentBatch = 0,
     this.totalBatches = 0,
   });
 
+  @override
+  State<_LiveStatus> createState() => _LiveStatusState();
+}
+
+class _LiveStatusState extends State<_LiveStatus>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  )..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
   String get _label {
-    switch (stage) {
+    if (!widget.hasImages) return 'Thinking...';
+    switch (widget.stage) {
       case GeminiBatchStage.uploading:
-        return 'Uploading images...';
+        return 'Reading...';
       case GeminiBatchStage.analyzing:
-        return totalBatches > 1
-            ? 'Analyzing images (Batch $currentBatch of $totalBatches)...'
-            : 'Analyzing images...';
+        return widget.totalBatches > 1
+            ? 'Analyzing (Batch ${widget.currentBatch} of ${widget.totalBatches})...'
+            : 'Analyzing...';
       case GeminiBatchStage.generating:
-        return 'Generating final answer...';
+        return 'Writing...';
       case null:
-        return 'Analyzing images...';
+        return 'Reading...';
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // No bubble, no background, no border, no shadow — just the dot and
+    // the label, sitting directly in the conversation flow at the same
+    // spot the old typing indicator occupied.
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const TypingIndicator(),
-          Padding(
-            padding: const EdgeInsets.only(left: 2, top: 2),
-            child: Text(
-              _label,
-              style: theme.textTheme.labelMedium?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-                fontWeight: FontWeight.w500,
+          AnimatedBuilder(
+            animation: _pulse,
+            builder: (context, child) {
+              final t = _pulse.value;
+              return Opacity(
+                opacity: 0.45 + 0.55 * t,
+                child: Transform.scale(scale: 0.8 + 0.2 * t, child: child),
+              );
+            },
+            child: const DecoratedBox(
+              decoration: BoxDecoration(
+                color: Color(0xFF22C55E),
+                shape: BoxShape.circle,
               ),
+              child: SizedBox(width: 8, height: 8),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            _label,
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              fontWeight: FontWeight.w500,
             ),
           ),
         ],
@@ -1883,7 +1913,7 @@ const _HomeQuickAction _kActionExplainImage = _HomeQuickAction(
 
 /// A clean, minimal "empty chat" home screen matching the approved mockup
 /// pixel-for-pixel: a light decorative Pakistan-outline backdrop, a
-/// left-aligned bold serif "What can I help you with today?" heading, and
+/// left-aligned bold serif "How can I help you today?" heading, and
 /// the six quick-action cards (icon, bold title, short description) laid
 /// out as a 2-column x 3-row grid.
 class _EmptyState extends StatelessWidget {
@@ -1935,7 +1965,7 @@ class _EmptyState extends StatelessWidget {
                   FadeInUp(
                     duration: const Duration(milliseconds: 420),
                     child: Text(
-                      'What can I help you\nwith today?',
+                      'How can I help you today?',
                       textAlign: TextAlign.left,
                       style: GoogleFonts.playfairDisplay(
                         fontSize: 34,
@@ -2118,10 +2148,12 @@ class _QuickActionPillState extends State<_QuickActionPill> {
                     const SizedBox(height: 3),
                     Text(
                       widget.action.description,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                       style: GoogleFonts.poppins(
-                        fontSize: 12,
+                        fontSize: 13,
                         fontWeight: FontWeight.w400,
-                        height: 1.35,
+                        height: 1.2,
                         color: _PakHome.secondaryText,
                       ),
                     ),
@@ -2470,7 +2502,13 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                                   onSend();
                                 },
                       child: Padding(
-                        padding: const EdgeInsets.all(11),
+                        // Step 31 — Send Button Polish: padding trimmed from
+                        // 11 to 8 (paired with the smaller icon/spinner/stop
+                        // sizes below) shrinks the button's overall diameter
+                        // from 42dp to 34dp — a 19% reduction — while
+                        // keeping the same color, icon, animation, and
+                        // behavior untouched.
+                        padding: const EdgeInsets.all(8),
                         child: AnimatedSwitcher(
                           duration: const Duration(milliseconds: 180),
                           transitionBuilder: (child, animation) =>
@@ -2478,8 +2516,8 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                           child: isStreaming
                               ? Container(
                                   key: const ValueKey('stop'),
-                                  width: 12,
-                                  height: 12,
+                                  width: 10,
+                                  height: 10,
                                   decoration: BoxDecoration(
                                     color: theme.colorScheme.onPrimary,
                                     borderRadius: BorderRadius.circular(3),
@@ -2488,8 +2526,8 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                               : isSending
                                   ? SizedBox(
                                       key: const ValueKey('sending'),
-                                      width: 17,
-                                      height: 17,
+                                      width: 14,
+                                      height: 14,
                                       child: CircularProgressIndicator(
                                         strokeWidth: 2,
                                         color: theme.colorScheme.onPrimary,
@@ -2499,7 +2537,7 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                                       Icons.arrow_upward_rounded,
                                       key: const ValueKey('send'),
                                       color: theme.colorScheme.onPrimary,
-                                      size: 20,
+                                      size: 18,
                                     ),
                         ),
                       ),
