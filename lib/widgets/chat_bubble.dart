@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
-import '../core/theme/chat_palette.dart';
 import '../models/chat_message.dart';
 import 'attachment_preview.dart';
 
@@ -257,11 +256,13 @@ class _ChatBubbleState extends State<ChatBubble> {
                   ? const EdgeInsets.symmetric(horizontal: 20, vertical: 16)
                   : const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
               constraints: BoxConstraints(
-                // Step 12.4: the user bubble is now noticeably smaller —
-                // about 68% of the screen — instead of sharing the AI
-                // reply's roomier 80% ceiling.
+                // Step 12.4: the user bubble is kept noticeably smaller —
+                // about 68% of the screen. Step 33: AI replies now use a
+                // much wider, ChatGPT/Claude-style reading column (~89%
+                // of the available width) instead of the old 80% cap —
+                // width only; padding, font, and colors are untouched.
                 maxWidth: MediaQuery.of(context).size.width *
-                    (isUser ? 0.68 : 0.8),
+                    (isUser ? 0.68 : 0.89),
               ),
               decoration: BoxDecoration(
                 color: bubbleColor,
@@ -329,12 +330,12 @@ class _ChatBubbleState extends State<ChatBubble> {
                       ],
                     ),
                   ),
-                // Step 26: before the first chunk of a live stream has
-                // arrived, show the same pulsing three-dot "typing" cue
-                // the old pre-reply indicator used, right inside the
-                // bubble that will hold the answer.
+                // Step 33: before the first chunk of a live stream has
+                // arrived, show the minimal single-dot live status right
+                // inside the bubble that will hold the answer — no more
+                // three-dot typing bubble.
                 if (showLiveTypingDots)
-                  _LiveTypingDots(color: ChatPalette.userBubble)
+                  const _InlineLiveDot(label: 'Writing...')
                 // AI replies render as Markdown (bold, lists, code blocks,
                 // etc.) at a slightly larger size with roomier line
                 // spacing for readability; user/error text stays plain.
@@ -458,72 +459,66 @@ class _ChatBubbleState extends State<ChatBubble> {
   }
 }
 
-/// Three small, pulsing dots shown inside a fresh AI bubble before the
-/// first chunk of a live network stream has arrived — the in-bubble
-/// equivalent of the old pre-reply [TypingIndicator], sized to sit
-/// naturally inside the bubble's own padding instead of floating above it.
-class _LiveTypingDots extends StatefulWidget {
-  final Color color;
-  const _LiveTypingDots({required this.color});
+/// Step 33: the premium, bubble-free live status used inside a fresh AI
+/// reply before the first chunk of a live network stream has arrived —
+/// this replaces the old in-bubble three-dot typing animation. It mirrors
+/// the chat screen's own pre-send `_LiveStatus` indicator: a single small
+/// green dot with a subtle pulse, plain text beside it, and no bubble,
+/// background, border, or shadow of any kind.
+class _InlineLiveDot extends StatefulWidget {
+  final String label;
+  const _InlineLiveDot({required this.label});
 
   @override
-  State<_LiveTypingDots> createState() => _LiveTypingDotsState();
+  State<_InlineLiveDot> createState() => _InlineLiveDotState();
 }
 
-class _LiveTypingDotsState extends State<_LiveTypingDots>
+class _InlineLiveDotState extends State<_InlineLiveDot>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 900),
-    )..repeat(reverse: true);
-  }
+  late final AnimationController _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  )..repeat(reverse: true);
 
   @override
   void dispose() {
-    _controller.dispose();
+    _pulse.dispose();
     super.dispose();
-  }
-
-  Widget _dot(double phaseOffset) {
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, _) {
-        final t = (_controller.value + phaseOffset) % 1.0;
-        final eased = Curves.easeInOutSine.transform(t);
-        final scale = 0.75 + (eased * 0.5);
-        final opacity = 0.35 + (eased * 0.65);
-        return Transform.scale(
-          scale: scale,
-          child: Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: widget.color.withOpacity(opacity),
-            ),
-          ),
-        );
-      },
-    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _dot(0.0),
-          const SizedBox(width: 6),
-          _dot(0.15),
-          const SizedBox(width: 6),
-          _dot(0.3),
+          AnimatedBuilder(
+            animation: _pulse,
+            builder: (context, child) {
+              final t = _pulse.value;
+              return Opacity(
+                opacity: 0.45 + 0.55 * t,
+                child: Transform.scale(scale: 0.8 + 0.2 * t, child: child),
+              );
+            },
+            child: const DecoratedBox(
+              decoration: BoxDecoration(
+                color: Color(0xFF22C55E),
+                shape: BoxShape.circle,
+              ),
+              child: SizedBox(width: 8, height: 8),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            widget.label,
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
         ],
       ),
     );

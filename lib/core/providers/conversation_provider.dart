@@ -47,10 +47,15 @@ class ConversationProvider extends ChangeNotifier {
   List<ChatMessage> get currentMessages => current?.messages ?? const [];
 
   /// Loads persisted conversations (migrating Step-11 single-history data
-  /// the first time), then restores whichever conversation was last open —
-  /// falling back to the most recently updated one, or a brand-new empty
-  /// conversation if there's nothing saved at all. Safe to call more than
-  /// once; only the first call does any work.
+  /// the first time). Step 33: a cold app launch no longer reopens
+  /// straight into whatever conversation was last on screen — it always
+  /// lands on a fresh, empty conversation (i.e. the Home screen), while
+  /// every previous conversation stays exactly as it was, fully intact
+  /// and reachable from History. If the most recent conversation is
+  /// already empty (e.g. the person cold-launched twice without sending
+  /// anything), that same blank entry is reused instead of piling up
+  /// duplicate untitled chats. Safe to call more than once; only the
+  /// first call does any work.
   Future<void> init() async {
     if (_initialized) return;
 
@@ -61,15 +66,21 @@ class ConversationProvider extends ChangeNotifier {
       if (migrated != null) _conversations = [migrated];
     }
 
-    final lastId = await ConversationStorageService.loadLastConversationId();
-    if (lastId != null && _conversations.any((c) => c.id == lastId)) {
-      _currentId = lastId;
-    } else if (_conversations.isNotEmpty) {
-      _currentId = conversations.first.id; // most recently updated
-    } else {
+    if (_conversations.isEmpty) {
       final fresh = Conversation.create();
       _conversations = [fresh];
       _currentId = fresh.id;
+    } else {
+      final mostRecent = conversations.first; // newest-first, pinned first
+      if (mostRecent.isEmpty) {
+        // Already a blank chat sitting there — reuse it instead of
+        // creating another one on every cold start.
+        _currentId = mostRecent.id;
+      } else {
+        final fresh = Conversation.create();
+        _conversations.insert(0, fresh);
+        _currentId = fresh.id;
+      }
     }
 
     _initialized = true;

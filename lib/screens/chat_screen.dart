@@ -1580,7 +1580,7 @@ class _LiveStatusState extends State<_LiveStatus>
     if (!widget.hasImages) return 'Thinking...';
     switch (widget.stage) {
       case GeminiBatchStage.uploading:
-        return 'Reading...';
+        return 'Reading image...';
       case GeminiBatchStage.analyzing:
         return widget.totalBatches > 1
             ? 'Analyzing (Batch ${widget.currentBatch} of ${widget.totalBatches})...'
@@ -1588,7 +1588,7 @@ class _LiveStatusState extends State<_LiveStatus>
       case GeminiBatchStage.generating:
         return 'Writing...';
       case null:
-        return 'Reading...';
+        return 'Reading image...';
     }
   }
 
@@ -2148,12 +2148,21 @@ class _QuickActionPillState extends State<_QuickActionPill> {
                     const SizedBox(height: 3),
                     Text(
                       widget.action.description,
-                      maxLines: 2,
+                      // Step 33: typography-only fix so every description
+                      // fits naturally instead of truncating — a touch
+                      // smaller, tighter line height, and room for a third
+                      // line (card, grid, spacing, and shadow are all
+                      // unchanged; the card already sizes to its content
+                      // via IntrinsicHeight, so this just lets that
+                      // content be the full sentence instead of a clipped
+                      // one).
+                      maxLines: 3,
                       overflow: TextOverflow.ellipsis,
                       style: GoogleFonts.poppins(
-                        fontSize: 13,
+                        fontSize: 12.5,
                         fontWeight: FontWeight.w400,
-                        height: 1.2,
+                        height: 1.25,
+                        letterSpacing: -0.05,
                         color: _PakHome.secondaryText,
                       ),
                     ),
