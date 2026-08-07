@@ -2354,7 +2354,14 @@ class _ChatInputBarState extends State<_ChatInputBar> {
             ],
           ),
           padding: const EdgeInsets.only(left: 4, right: 4),
-          child: Row(
+          // Step 33.1: wrapped in IntrinsicHeight purely so the send
+          // button below can be given a concrete, finite row height to
+          // center itself against — it does not change the row's own
+          // height (still whatever it naturally was: the tallest child,
+          // exactly as before), so the "+"/mic buttons and the text
+          // field are laid out identically to before this step.
+          child: IntrinsicHeight(
+            child: Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Padding(
@@ -2467,7 +2474,20 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                   ),
                 ),
               ),
-              Padding(
+              // Step 33.1 — Perfect Send Button Alignment: wrapped in an
+              // `Align` so the button centers itself vertically within the
+              // row's full (now-finite, via IntrinsicHeight above) height,
+              // instead of sitting flush against the row's bottom edge
+              // like the other end-aligned children. `widthFactor: 1.0`
+              // keeps Align shrink-wrapped to the button's own width, so
+              // it takes no extra horizontal space and every other child
+              // in this row keeps its exact existing position — this is a
+              // pure vertical-alignment fix. Size, icon, color, shape,
+              // animation, padding, and behavior below are all unchanged.
+              Align(
+                alignment: Alignment.center,
+                widthFactor: 1.0,
+                child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 2),
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 180),
@@ -2544,8 +2564,10 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                     ),
                   ),
                 ),
+                ),
               ),
             ],
+            ),
           ),
         ),
       ),

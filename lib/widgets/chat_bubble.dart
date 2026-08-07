@@ -81,6 +81,15 @@ class ChatBubble extends StatefulWidget {
   State<ChatBubble> createState() => _ChatBubbleState();
 }
 
+// Step 32: premium ChatGPT/Claude-style message colors. The user bubble
+// moves from the old saturated "sea green" fill to a soft, neutral light
+// surface with dark text — kept as fixed literals (not theme-derived) so
+// the user message reads the same light, premium way in both light and
+// dark mode, matching the reference apps. Only used here in chat_bubble.dart;
+// no theme file is touched.
+const Color _kUserBubbleLight = Color(0xFFF3F4F6);
+const Color _kUserTextDark = Color(0xFF111827);
+
 enum _Feedback { none, liked }
 
 /// Step 18.4: the AI action row now always shows exactly three actions —
@@ -197,19 +206,22 @@ class _ChatBubbleState extends State<ChatBubble> {
 
     final isDark = theme.brightness == Brightness.dark;
 
-    // Step 12.4: the user bubble now uses a flat, lighter "sea green"
-    // instead of the theme's punchier primary — no gradient, no heavy
-    // solid block of saturated color, just a soft, muted fill.
+    // Step 32: user messages now use a flat, very light neutral surface
+    // (matching the surface previously used behind AI replies) with dark
+    // text, instead of the old solid "sea green" fill — a modern,
+    // ChatGPT/Claude-style look. AI replies no longer sit in a colored
+    // container at all (handled below via `decoration`), so `bubbleColor`
+    // is only meaningful for the user and error cases here.
     final bubbleColor = message.isError
         ? theme.colorScheme.errorContainer
         : isUser
-            ? ChatPalette.userBubble
-            : theme.colorScheme.surfaceContainerHigh;
+            ? _kUserBubbleLight
+            : Colors.transparent;
 
     final textColor = message.isError
         ? theme.colorScheme.onErrorContainer
         : isUser
-            ? Colors.white
+            ? _kUserTextDark
             : theme.colorScheme.onSurface;
 
     // While streaming, only the revealed slice of the reply is rendered.
@@ -259,33 +271,25 @@ class _ChatBubbleState extends State<ChatBubble> {
                   bottomLeft: Radius.circular(isUser ? 24 : 8),
                   bottomRight: Radius.circular(isUser ? 8 : 24),
                 ),
-                border: isAiReply
-                    ? Border.all(
-                        color: theme.colorScheme.outlineVariant.withOpacity(0.3),
-                        width: 1,
-                      )
-                    : null,
+                // Step 32: AI replies no longer get a border or shadow —
+                // the container decoration is fully removed for them so the
+                // response sits directly on the page background, open and
+                // spacious, ChatGPT/Claude-style. Error bubbles keep their
+                // existing (border/shadow-free) look, unchanged.
+                border: null,
                 // Step 12.4: shadows across the board are now just a very
                 // soft touch — no more visible colored glow under the
-                // user bubble.
-                boxShadow: isAiReply
+                // user bubble. Step 32: the AI-reply shadow is removed
+                // along with its container; only the user bubble keeps one.
+                boxShadow: isUser
                     ? [
                         BoxShadow(
-                          color: theme.colorScheme.shadow
-                              .withOpacity(isDark ? 0.0 : 0.05),
-                          blurRadius: 10,
-                          offset: const Offset(0, 3),
+                          color: Colors.black.withOpacity(isDark ? 0.10 : 0.08),
+                          blurRadius: 8,
+                          offset: const Offset(0, 2),
                         ),
                       ]
-                    : isUser
-                        ? [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(isDark ? 0.10 : 0.08),
-                              blurRadius: 8,
-                              offset: const Offset(0, 2),
-                            ),
-                          ]
-                        : null,
+                    : null,
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,

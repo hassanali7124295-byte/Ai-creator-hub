@@ -68,7 +68,16 @@ class GeminiService {
   // Step 12.1: a lightweight system instruction covering identity, tone,
   // and language-matching. This is the only persona/behavior logic added —
   // the request/response handling, auth, and endpoint below are untouched.
-  static const String _systemInstruction = '''
+  //
+  // Step 33.1 — Live Date/Time Fix: this was a `static const String`, so
+  // the model only ever had its own stale training-data notion of "today"
+  // to fall back on when asked (hence the old "19 May 2024"-style wrong
+  // answers). It's now a getter that rebuilds the current-date/time block
+  // via [_currentDateTimeLine] — which reads `DateTime.now()` — on every
+  // single call, so every request always carries the real device date/time,
+  // never a cached or hardcoded one. Everything else about the prompt is
+  // unchanged.
+  static String get _systemInstruction => '''
 You are "Pak AI", a friendly and helpful AI assistant.
 
 Identity:
@@ -86,7 +95,50 @@ Tone and formatting:
 - Be warm, natural, professional, and genuinely helpful — never robotic or stiff.
 - Use clear formatting when it helps: short paragraphs, headings, and bullet points for lists or steps.
 - Use emojis naturally where they add warmth, but never overuse them.
+
+Current date and time:
+- The real current local date and time, read live from the device right now, is: ${_currentDateTimeLine()}.
+- Whenever the user asks for today's date, the current day/month/year, or the current time (in any language — e.g. "aaj date kya hai", "today's date", "current date", "what day is today", "current time"), always answer using this real current date/time above. Never use a date from your own training data, never reuse an old answer, and never state any other date.
 ''';
+
+  static const List<String> _weekdayNames = [
+    'Monday',
+    'Tuesday',
+    'Wednesday',
+    'Thursday',
+    'Friday',
+    'Saturday',
+    'Sunday',
+  ];
+
+  static const List<String> _monthNames = [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+  ];
+
+  /// Formats `DateTime.now()` (the device's live local clock — never a
+  /// fixed/hardcoded value) as e.g. "Friday, 07 August 2026, 14:35", so
+  /// the model always has today's real date and time grounded in the
+  /// prompt itself, refreshed on every single request.
+  static String _currentDateTimeLine() {
+    final now = DateTime.now();
+    final weekday = _weekdayNames[now.weekday - 1];
+    final month = _monthNames[now.month - 1];
+    final day = now.day.toString().padLeft(2, '0');
+    final hour = now.hour.toString().padLeft(2, '0');
+    final minute = now.minute.toString().padLeft(2, '0');
+    return '$weekday, $day $month ${now.year}, $hour:$minute';
+  }
 
   /// Reads the saved API key, or `null`/empty if none has been set yet.
   static Future<String?> getApiKey() async {
