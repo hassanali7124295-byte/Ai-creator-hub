@@ -257,12 +257,12 @@ class _ChatBubbleState extends State<ChatBubble> {
                   : const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
               constraints: BoxConstraints(
                 // Step 12.4: the user bubble is kept noticeably smaller —
-                // about 68% of the screen. Step 33: AI replies now use a
-                // much wider, ChatGPT/Claude-style reading column (~89%
-                // of the available width) instead of the old 80% cap —
-                // width only; padding, font, and colors are untouched.
+                // about 68% of the screen. Step 33 widened AI replies to
+                // ~89%; Step 34 nudges that a little further to ~92% —
+                // ChatGPT/Claude-width — width only; padding, font, and
+                // colors are untouched.
                 maxWidth: MediaQuery.of(context).size.width *
-                    (isUser ? 0.68 : 0.89),
+                    (isUser ? 0.68 : 0.92),
               ),
               decoration: BoxDecoration(
                 color: bubbleColor,

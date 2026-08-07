@@ -639,6 +639,10 @@ class _ChatScreenState extends State<ChatScreen> {
         _messages.add(
           ChatMessage(text: e.message, isUser: false, isError: true),
         );
+        // Step 34: an error reply is still a new message arriving — the
+        // "Jump to Latest" button needs to appear for it too, exactly
+        // like a successful reply, if the person is scrolled away.
+        if (!_followBottom) _newContentWhilePaused = true;
       });
       _checkApiKey();
     } finally {
@@ -773,6 +777,10 @@ class _ChatScreenState extends State<ChatScreen> {
               isError: true,
             );
           }
+          // Step 34: same as the non-streaming error path above — this
+          // error bubble is a new message too, so the "Jump to Latest"
+          // button should surface for it if the person has scrolled away.
+          if (!_followBottom) _newContentWhilePaused = true;
         });
         _checkApiKey();
       }
@@ -2129,7 +2137,11 @@ class _QuickActionPillState extends State<_QuickActionPill> {
               borderRadius: _cardRadius,
               onTap: widget.onTap,
               child: Padding(
-                padding: const EdgeInsets.all(14),
+                // Step 34: a touch more vertical breathing room (14 → 16
+                // top/bottom) — "increase card height slightly" — while
+                // the horizontal padding, grid, gutters, and shadow all
+                // stay exactly as they were.
+                padding: const EdgeInsets.fromLTRB(14, 16, 14, 16),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -2148,16 +2160,18 @@ class _QuickActionPillState extends State<_QuickActionPill> {
                     const SizedBox(height: 3),
                     Text(
                       widget.action.description,
-                      // Step 33: typography-only fix so every description
-                      // fits naturally instead of truncating — a touch
-                      // smaller, tighter line height, and room for a third
-                      // line (card, grid, spacing, and shadow are all
-                      // unchanged; the card already sizes to its content
-                      // via IntrinsicHeight, so this just lets that
-                      // content be the full sentence instead of a clipped
-                      // one).
-                      maxLines: 3,
-                      overflow: TextOverflow.ellipsis,
+                      // Step 34: no `maxLines`/`overflow` cap at all, so
+                      // the description can never clip or ellipsize on
+                      // any screen size — it simply wraps to however many
+                      // lines it needs. The card already sizes itself to
+                      // its own content (`mainAxisSize.min` here, plus
+                      // the `IntrinsicHeight`-driven row above matching
+                      // both cards in a row to the taller one), so a
+                      // longer description just makes the card a little
+                      // taller instead of ever being cut off — on a
+                      // narrow phone that might be 3 lines, on a wide
+                      // tablet it might be 1, and it always fits either
+                      // way.
                       style: GoogleFonts.poppins(
                         fontSize: 12.5,
                         fontWeight: FontWeight.w400,
@@ -2363,14 +2377,15 @@ class _ChatInputBarState extends State<_ChatInputBar> {
             ],
           ),
           padding: const EdgeInsets.only(left: 4, right: 4),
-          // Step 33.1: wrapped in IntrinsicHeight purely so the send
-          // button below can be given a concrete, finite row height to
-          // center itself against — it does not change the row's own
-          // height (still whatever it naturally was: the tallest child,
-          // exactly as before), so the "+"/mic buttons and the text
-          // field are laid out identically to before this step.
-          child: IntrinsicHeight(
-            child: Row(
+          // Step 34: back to a plain `Row` (no `IntrinsicHeight`) with
+          // `crossAxisAlignment: CrossAxisAlignment.end` for every child,
+          // including the send button — see the send button's own comment
+          // below for why the Step 33.1 "vertically centered" fix was
+          // reverted. The "+" button, text field, and mic button were
+          // never touched by that fix and keep behaving exactly as they
+          // always have: bottom-anchored, growing upward as the text
+          // field gains lines.
+          child: Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Padding(
@@ -2483,21 +2498,28 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                   ),
                 ),
               ),
-              // Step 33.1 — Perfect Send Button Alignment: wrapped in an
-              // `Align` so the button centers itself vertically within the
-              // row's full (now-finite, via IntrinsicHeight above) height,
-              // instead of sitting flush against the row's bottom edge
-              // like the other end-aligned children. `widthFactor: 1.0`
-              // keeps Align shrink-wrapped to the button's own width, so
-              // it takes no extra horizontal space and every other child
-              // in this row keeps its exact existing position — this is a
-              // pure vertical-alignment fix. Size, icon, color, shape,
-              // animation, padding, and behavior below are all unchanged.
-              Align(
-                alignment: Alignment.center,
-                widthFactor: 1.0,
-                child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 2),
+              // Step 34: the send button is bottom-anchored (`Row`'s
+              // `crossAxisAlignment: CrossAxisAlignment.end`, same as the
+              // "+" and mic buttons), not vertically centered in the
+              // pill's full height. The Step 33.1 "center inside
+              // IntrinsicHeight" fix looked right for a single line of
+              // text, but as the text field grows to two, three, four,
+              // or five lines, centering against the *whole* pill height
+              // dragged the button upward with it — the opposite of
+              // "permanently anchored to the bottom-right corner." A
+              // fixed bottom padding (5, instead of the 2 the "+"/mic
+              // buttons use) gets the same optically-centered look for
+              // the common single-line case, but the button now stays
+              // pinned to the same spot near the bottom of the pill no
+              // matter how tall the text field grows. Size, icon, color,
+              // shape, animation, and behavior below are all unchanged.
+              Padding(
+                padding: const EdgeInsets.only(
+                  left: 2,
+                  right: 2,
+                  top: 2,
+                  bottom: 5,
+                ),
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 180),
                   curve: Curves.easeOut,
@@ -2573,10 +2595,8 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                     ),
                   ),
                 ),
-                ),
               ),
             ],
-            ),
           ),
         ),
       ),
