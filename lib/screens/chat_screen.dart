@@ -1894,6 +1894,12 @@ class _EmptyState extends StatelessWidget {
   /// input bar, so this stays a pure UI convenience.
   final ValueChanged<String> onSuggestionTap;
 
+  const _EmptyState({
+    Key? key,
+    required this.theme,
+    required this.onSuggestionTap,
+  }) : super(key: key);
+
   @override
   Widget build(BuildContext context) {
     // Step 28 — Final Premium UI Refinement: fixed light palette (see
