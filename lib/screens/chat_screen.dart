@@ -639,10 +639,6 @@ class _ChatScreenState extends State<ChatScreen> {
         _messages.add(
           ChatMessage(text: e.message, isUser: false, isError: true),
         );
-        // Step 34: an error reply is still a new message arriving — the
-        // "Jump to Latest" button needs to appear for it too, exactly
-        // like a successful reply, if the person is scrolled away.
-        if (!_followBottom) _newContentWhilePaused = true;
       });
       _checkApiKey();
     } finally {
@@ -777,10 +773,6 @@ class _ChatScreenState extends State<ChatScreen> {
               isError: true,
             );
           }
-          // Step 34: same as the non-streaming error path above — this
-          // error bubble is a new message too, so the "Jump to Latest"
-          // button should surface for it if the person has scrolled away.
-          if (!_followBottom) _newContentWhilePaused = true;
         });
         _checkApiKey();
       }
@@ -1919,6 +1911,58 @@ const _HomeQuickAction _kActionExplainImage = _HomeQuickAction(
   prompt: 'Explain an image',
 );
 
+/// Step 33.2 — every card's description, so the tallest one can be
+/// measured and that single height shared by all six cards (see
+/// `_measureMaxDescriptionHeight`). Purely a lookup list for that
+/// measurement; the grid order/layout below is unchanged.
+const List<_HomeQuickAction> _kAllQuickActions = [
+  _kActionAsk,
+  _kActionBrainstorm,
+  _kActionScript,
+  _kActionSummarize,
+  _kActionTranslate,
+  _kActionExplainImage,
+];
+
+/// Step 33.2 — Quick Action Cards fix: the description text style is
+/// shared between the real card widgets and this measurement helper so
+/// the computed height always matches what's actually rendered.
+TextStyle _quickActionDescriptionStyle() => GoogleFonts.poppins(
+      fontSize: 12.5,
+      fontWeight: FontWeight.w400,
+      height: 1.25,
+      letterSpacing: -0.05,
+    );
+
+/// Step 33.2 — measures, at the card's *actual* text width for the
+/// current screen, how tall the tallest of the six descriptions needs to
+/// be to display in full (no truncation). Using the system text-scale
+/// factor keeps this correct under larger accessibility font sizes too.
+/// The result is used as a single shared height for every card's
+/// description slot, so: (a) no description can ever clip/overflow —
+/// the slot is always sized to fit the longest one — and (b) all six
+/// cards end up exactly the same height, since icon + title + this
+/// shared slot are identical across cards. A small buffer is added to
+/// absorb sub-pixel rounding.
+double _measureMaxDescriptionHeight({
+  required double textWidth,
+  required double textScaleFactor,
+}) {
+  final style = _quickActionDescriptionStyle();
+  var maxHeight = 0.0;
+  for (final action in _kAllQuickActions) {
+    final painter = TextPainter(
+      text: TextSpan(text: action.description, style: style),
+      textDirection: TextDirection.ltr,
+      textScaleFactor: textScaleFactor,
+    )..layout(maxWidth: textWidth);
+    if (painter.height > maxHeight) {
+      maxHeight = painter.height;
+    }
+  }
+  return maxHeight + 2.0;
+}
+
 /// A clean, minimal "empty chat" home screen matching the approved mockup
 /// pixel-for-pixel: a light decorative Pakistan-outline backdrop, a
 /// left-aligned bold serif "How can I help you today?" heading, and
@@ -1966,110 +2010,139 @@ class _EmptyState extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
             child: SizedBox(
               width: double.infinity,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  FadeInUp(
-                    duration: const Duration(milliseconds: 420),
-                    child: Text(
-                      'How can I help you today?',
-                      textAlign: TextAlign.left,
-                      style: GoogleFonts.playfairDisplay(
-                        fontSize: 34,
-                        fontWeight: FontWeight.w800,
-                      height: 1.18,
-                      letterSpacing: -0.2,
-                      color: _PakHome.text,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 32),
-                // Step 29.1 — Approved-mockup match: a 2-column x 3-row
-                // grid of full content cards (icon, bold title, short
-                // description), in the exact mockup order — Ask a
-                // question / Brainstorm ideas, Summarize a file / Write a
-                // script, Translate text / Explain an image. Each row is
-                // wrapped in IntrinsicHeight with stretched children so the
-                // two cards in a row always match each other's height
-                // (whichever has the longer description), while every row
-                // sizes independently to its own content — never a rigid
-                // fixed-height grid.
-                FadeInUp(
-                  duration: const Duration(milliseconds: 420),
-                  delay: const Duration(milliseconds: 100),
-                  child: IntrinsicHeight(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Expanded(
-                          child: _QuickActionPill(
-                            action: _kActionAsk,
-                            onTap: () => onSuggestionTap(_kActionAsk.prompt),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  // Step 33.2 — Quick Action Cards fix: derive the exact
+                  // per-card text width from the *actual* layout constants
+                  // used below (12px gap between the two cards in a row,
+                  // 14px padding on every side of a card — see
+                  // `_QuickActionPill`), then measure the tallest of the
+                  // six descriptions at that width. Sharing one computed
+                  // height across all six cards' description slots means
+                  // every description always fits in full (no clipping,
+                  // no overflow, no ellipsis) and all six cards stay
+                  // exactly equal height, on any screen size or system
+                  // font scale — while the grid, spacing, shadows,
+                  // colors, radius, icon size, and title style are all
+                  // completely unchanged.
+                  final cardWidth = (constraints.maxWidth - 12) / 2;
+                  final textWidth = cardWidth - 28;
+                  final descriptionHeight = _measureMaxDescriptionHeight(
+                    textWidth: textWidth > 0 ? textWidth : 0,
+                    textScaleFactor: MediaQuery.textScaleFactorOf(context),
+                  );
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      FadeInUp(
+                        duration: const Duration(milliseconds: 420),
+                        child: Text(
+                          'How can I help you today?',
+                          textAlign: TextAlign.left,
+                          style: GoogleFonts.playfairDisplay(
+                            fontSize: 34,
+                            fontWeight: FontWeight.w800,
+                            height: 1.18,
+                            letterSpacing: -0.2,
+                            color: _PakHome.text,
                           ),
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: _QuickActionPill(
-                            action: _kActionBrainstorm,
-                            onTap: () => onSuggestionTap(_kActionBrainstorm.prompt),
+                      ),
+                      const SizedBox(height: 32),
+                      // Step 29.1 — Approved-mockup match: a 2-column x
+                      // 3-row grid of full content cards (icon, bold
+                      // title, short description), in the exact mockup
+                      // order — Ask a question / Brainstorm ideas,
+                      // Summarize a file / Write a script, Translate text
+                      // / Explain an image. IntrinsicHeight + stretched
+                      // children still keep each row's own two cards
+                      // matched; `descriptionHeight` (computed above) now
+                      // also keeps every row the same height as every
+                      // other row, so all six cards match.
+                      FadeInUp(
+                        duration: const Duration(milliseconds: 420),
+                        delay: const Duration(milliseconds: 100),
+                        child: IntrinsicHeight(
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Expanded(
+                                child: _QuickActionPill(
+                                  action: _kActionAsk,
+                                  descriptionHeight: descriptionHeight,
+                                  onTap: () => onSuggestionTap(_kActionAsk.prompt),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: _QuickActionPill(
+                                  action: _kActionBrainstorm,
+                                  descriptionHeight: descriptionHeight,
+                                  onTap: () => onSuggestionTap(_kActionBrainstorm.prompt),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                FadeInUp(
-                  duration: const Duration(milliseconds: 420),
-                  delay: const Duration(milliseconds: 140),
-                  child: IntrinsicHeight(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Expanded(
-                          child: _QuickActionPill(
-                            action: _kActionSummarize,
-                            onTap: () => onSuggestionTap(_kActionSummarize.prompt),
+                      ),
+                      const SizedBox(height: 12),
+                      FadeInUp(
+                        duration: const Duration(milliseconds: 420),
+                        delay: const Duration(milliseconds: 140),
+                        child: IntrinsicHeight(
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Expanded(
+                                child: _QuickActionPill(
+                                  action: _kActionSummarize,
+                                  descriptionHeight: descriptionHeight,
+                                  onTap: () => onSuggestionTap(_kActionSummarize.prompt),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: _QuickActionPill(
+                                  action: _kActionScript,
+                                  descriptionHeight: descriptionHeight,
+                                  onTap: () => onSuggestionTap(_kActionScript.prompt),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: _QuickActionPill(
-                            action: _kActionScript,
-                            onTap: () => onSuggestionTap(_kActionScript.prompt),
+                      ),
+                      const SizedBox(height: 12),
+                      FadeInUp(
+                        duration: const Duration(milliseconds: 420),
+                        delay: const Duration(milliseconds: 180),
+                        child: IntrinsicHeight(
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Expanded(
+                                child: _QuickActionPill(
+                                  action: _kActionTranslate,
+                                  descriptionHeight: descriptionHeight,
+                                  onTap: () => onSuggestionTap(_kActionTranslate.prompt),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: _QuickActionPill(
+                                  action: _kActionExplainImage,
+                                  descriptionHeight: descriptionHeight,
+                                  onTap: () => onSuggestionTap(_kActionExplainImage.prompt),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                FadeInUp(
-                  duration: const Duration(milliseconds: 420),
-                  delay: const Duration(milliseconds: 180),
-                  child: IntrinsicHeight(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Expanded(
-                          child: _QuickActionPill(
-                            action: _kActionTranslate,
-                            onTap: () => onSuggestionTap(_kActionTranslate.prompt),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: _QuickActionPill(
-                            action: _kActionExplainImage,
-                            onTap: () => onSuggestionTap(_kActionExplainImage.prompt),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
+                      ),
+                    ],
+                  );
+                },
               ),
             ),
           ),
@@ -2090,7 +2163,16 @@ class _EmptyState extends StatelessWidget {
 class _QuickActionPill extends StatefulWidget {
   final _HomeQuickAction action;
   final VoidCallback onTap;
-  const _QuickActionPill({required this.action, required this.onTap});
+  // Step 33.2 — shared height (computed once in `_EmptyState` from the
+  // longest of all six descriptions) for this card's description slot,
+  // so the text always fits in full and every card matches every other
+  // card's height.
+  final double descriptionHeight;
+  const _QuickActionPill({
+    required this.action,
+    required this.onTap,
+    required this.descriptionHeight,
+  });
 
   @override
   State<_QuickActionPill> createState() => _QuickActionPillState();
@@ -2137,11 +2219,7 @@ class _QuickActionPillState extends State<_QuickActionPill> {
               borderRadius: _cardRadius,
               onTap: widget.onTap,
               child: Padding(
-                // Step 34: a touch more vertical breathing room (14 → 16
-                // top/bottom) — "increase card height slightly" — while
-                // the horizontal padding, grid, gutters, and shadow all
-                // stay exactly as they were.
-                padding: const EdgeInsets.fromLTRB(14, 16, 14, 16),
+                padding: const EdgeInsets.all(14),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -2158,26 +2236,20 @@ class _QuickActionPillState extends State<_QuickActionPill> {
                       ),
                     ),
                     const SizedBox(height: 3),
-                    Text(
-                      widget.action.description,
-                      // Step 34: no `maxLines`/`overflow` cap at all, so
-                      // the description can never clip or ellipsize on
-                      // any screen size — it simply wraps to however many
-                      // lines it needs. The card already sizes itself to
-                      // its own content (`mainAxisSize.min` here, plus
-                      // the `IntrinsicHeight`-driven row above matching
-                      // both cards in a row to the taller one), so a
-                      // longer description just makes the card a little
-                      // taller instead of ever being cut off — on a
-                      // narrow phone that might be 3 lines, on a wide
-                      // tablet it might be 1, and it always fits either
-                      // way.
-                      style: GoogleFonts.poppins(
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.w400,
-                        height: 1.25,
-                        letterSpacing: -0.05,
-                        color: _PakHome.secondaryText,
+                    // Step 33.2 — fixed to the shared, measured height
+                    // (see `_measureMaxDescriptionHeight`) instead of a
+                    // guessed `maxLines`/ellipsis clip. The slot is
+                    // always exactly tall enough for the longest
+                    // description at the current screen width and text
+                    // scale, so this text — including this card's own,
+                    // shorter description — always renders in full.
+                    SizedBox(
+                      height: widget.descriptionHeight,
+                      child: Text(
+                        widget.action.description,
+                        style: _quickActionDescriptionStyle().copyWith(
+                          color: _PakHome.secondaryText,
+                        ),
                       ),
                     ),
                   ],
@@ -2377,15 +2449,14 @@ class _ChatInputBarState extends State<_ChatInputBar> {
             ],
           ),
           padding: const EdgeInsets.only(left: 4, right: 4),
-          // Step 34: back to a plain `Row` (no `IntrinsicHeight`) with
-          // `crossAxisAlignment: CrossAxisAlignment.end` for every child,
-          // including the send button — see the send button's own comment
-          // below for why the Step 33.1 "vertically centered" fix was
-          // reverted. The "+" button, text field, and mic button were
-          // never touched by that fix and keep behaving exactly as they
-          // always have: bottom-anchored, growing upward as the text
-          // field gains lines.
-          child: Row(
+          // Step 33.1: wrapped in IntrinsicHeight purely so the send
+          // button below can be given a concrete, finite row height to
+          // center itself against — it does not change the row's own
+          // height (still whatever it naturally was: the tallest child,
+          // exactly as before), so the "+"/mic buttons and the text
+          // field are laid out identically to before this step.
+          child: IntrinsicHeight(
+            child: Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Padding(
@@ -2498,28 +2569,21 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                   ),
                 ),
               ),
-              // Step 34: the send button is bottom-anchored (`Row`'s
-              // `crossAxisAlignment: CrossAxisAlignment.end`, same as the
-              // "+" and mic buttons), not vertically centered in the
-              // pill's full height. The Step 33.1 "center inside
-              // IntrinsicHeight" fix looked right for a single line of
-              // text, but as the text field grows to two, three, four,
-              // or five lines, centering against the *whole* pill height
-              // dragged the button upward with it — the opposite of
-              // "permanently anchored to the bottom-right corner." A
-              // fixed bottom padding (5, instead of the 2 the "+"/mic
-              // buttons use) gets the same optically-centered look for
-              // the common single-line case, but the button now stays
-              // pinned to the same spot near the bottom of the pill no
-              // matter how tall the text field grows. Size, icon, color,
-              // shape, animation, and behavior below are all unchanged.
-              Padding(
-                padding: const EdgeInsets.only(
-                  left: 2,
-                  right: 2,
-                  top: 2,
-                  bottom: 5,
-                ),
+              // Step 33.1 — Perfect Send Button Alignment: wrapped in an
+              // `Align` so the button centers itself vertically within the
+              // row's full (now-finite, via IntrinsicHeight above) height,
+              // instead of sitting flush against the row's bottom edge
+              // like the other end-aligned children. `widthFactor: 1.0`
+              // keeps Align shrink-wrapped to the button's own width, so
+              // it takes no extra horizontal space and every other child
+              // in this row keeps its exact existing position — this is a
+              // pure vertical-alignment fix. Size, icon, color, shape,
+              // animation, padding, and behavior below are all unchanged.
+              Align(
+                alignment: Alignment.center,
+                widthFactor: 1.0,
+                child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 2),
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 180),
                   curve: Curves.easeOut,
@@ -2595,8 +2659,10 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                     ),
                   ),
                 ),
+                ),
               ),
             ],
+            ),
           ),
         ),
       ),
