@@ -293,9 +293,9 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom(force: true);
 
     // Step 36 — root-cause fix for the cold-launch Quick Action overflow
-    // (see CHANGE_REPORT_STEP36.md). `_EmptyState` (and its Poppins
-    // `_sharedDescriptionHeight` TextPainter measurement) is only ever
-    // built for the first time right here, once `_isLoadingHistory`
+    // (see CHANGE_REPORT_STEP36.md). `_EmptyState` (and its Poppins quick
+    // action pills, Step 37) is only ever built for the first time right
+    // here, once `_isLoadingHistory`
     // becomes false above and — when the conversation is empty — the
     // Home quick-action grid mounts. That first build is what actually
     // requests the Poppins font from GoogleFonts; before this point,
@@ -1883,21 +1883,23 @@ class _ApiKeyBanner extends StatelessWidget {
   }
 }
 
-/// Step 29: the six Home quick-action entries, in the exact order and
-/// 2-column x 3-row grid shown in the mockup — Ask a question /
-/// Brainstorm ideas / Summarize a file / Write a script / Translate text /
+/// Step 29 (data), Step 37 (presentation): the six Home quick-action
+/// entries, in the exact order shown in the mockup — Ask a question /
+/// Brainstorm ideas / Write a script / Summarize a file / Translate text /
 /// Explain an image — each just filling the existing composer via
 /// [_applySuggestion]; sending itself still goes through the normal,
 /// unmodified input bar.
+///
+/// Step 37: the `description` field was removed — the new pill layout is
+/// icon + title only, so a separate description string no longer has
+/// anywhere to render.
 class _HomeQuickAction {
   final IconData icon;
   final String label;
-  final String description;
   final String prompt;
   const _HomeQuickAction({
     required this.icon,
     required this.label,
-    required this.description,
     required this.prompt,
   });
 }
@@ -1905,39 +1907,44 @@ class _HomeQuickAction {
 const _HomeQuickAction _kActionAsk = _HomeQuickAction(
   icon: Icons.chat_bubble_outline_rounded,
   label: 'Ask a question',
-  description: 'Get clear answers to anything you want to know.',
   prompt: 'Ask a question',
 );
 const _HomeQuickAction _kActionBrainstorm = _HomeQuickAction(
   icon: Icons.lightbulb_outline_rounded,
   label: 'Brainstorm ideas',
-  description: 'Generate creative ideas and solutions.',
   prompt: 'Brainstorm ideas',
 );
 const _HomeQuickAction _kActionScript = _HomeQuickAction(
   icon: Icons.edit_outlined,
   label: 'Write a script',
-  description: 'Create scripts for videos, ads, stories and more.',
   prompt: 'Write a script',
 );
 const _HomeQuickAction _kActionSummarize = _HomeQuickAction(
   icon: Icons.description_outlined,
   label: 'Summarize a file',
-  description: 'Upload a file and get key points instantly.',
   prompt: 'Summarize a file',
 );
 const _HomeQuickAction _kActionTranslate = _HomeQuickAction(
   icon: Icons.public,
   label: 'Translate text',
-  description: 'Translate into any language instantly.',
   prompt: 'Translate text',
 );
 const _HomeQuickAction _kActionExplainImage = _HomeQuickAction(
   icon: Icons.image_outlined,
   label: 'Explain an image',
-  description: 'Upload an image and get detailed explanation.',
   prompt: 'Explain an image',
 );
+
+/// Step 37: the ordered list of all six quick actions, used to build the
+/// pill `Wrap` in [_EmptyState].
+const List<_HomeQuickAction> _kHomeQuickActions = [
+  _kActionAsk,
+  _kActionBrainstorm,
+  _kActionScript,
+  _kActionSummarize,
+  _kActionTranslate,
+  _kActionExplainImage,
+];
 
 /// A clean, minimal "empty chat" home screen matching the approved mockup
 /// pixel-for-pixel: a light decorative Pakistan-outline backdrop, a
@@ -2004,120 +2011,33 @@ class _EmptyState extends StatelessWidget {
                     ),
                   ),
                 ),
-                const SizedBox(height: 32),
-                // Step 29.1 — Approved-mockup match: a 2-column x 3-row
-                // grid of full content cards (icon, bold title, short
-                // description), in the exact mockup order — Ask a
-                // question / Brainstorm ideas, Summarize a file / Write a
-                // script, Translate text / Explain an image.
-                //
-                // Step 33.1 — Typography fix (professional solution):
-                // instead of clipping the description with
-                // maxLines/ellipsis, a LayoutBuilder measures — via
-                // TextPainter, using the exact card content width and
-                // exact description TextStyle — how tall the *tallest* of
-                // all six descriptions needs to be to display in full.
-                // That single shared height is then applied to the
-                // description slot of all six cards (see
-                // `_sharedDescriptionHeight` below and its use inside
-                // `_QuickActionPill`), so every description is fully
-                // visible, nothing is clipped or ellipsized, and all six
-                // cards end up exactly the same height — not just within a
-                // row (the old IntrinsicHeight-per-row behavior, kept below
-                // for the two cards within a row) but across the whole
-                // grid. Card size, grid spacing, and column width are
-                // untouched — only the description's own layout changed.
-                LayoutBuilder(
-                  builder: (context, constraints) {
-                    final double descriptionHeight =
-                        _sharedDescriptionHeight(constraints.maxWidth);
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        FadeInUp(
-                          duration: const Duration(milliseconds: 420),
-                          delay: const Duration(milliseconds: 100),
-                          child: IntrinsicHeight(
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                Expanded(
-                                  child: _QuickActionPill(
-                                    action: _kActionAsk,
-                                    descriptionHeight: descriptionHeight,
-                                    onTap: () => onSuggestionTap(_kActionAsk.prompt),
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: _QuickActionPill(
-                                    action: _kActionBrainstorm,
-                                    descriptionHeight: descriptionHeight,
-                                    onTap: () => onSuggestionTap(_kActionBrainstorm.prompt),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
+                const SizedBox(height: 28),
+                // Step 37 — Home Quick Actions Redesign (Pill Style): the
+                // old 2-column x 3-row description cards are fully
+                // replaced with a compact, icon + title only pill layout.
+                // A `Wrap` (rather than a fixed grid) is what makes this
+                // responsive on every screen size — pills flow left to
+                // right and wrap onto as many rows as the available width
+                // needs, so nothing ever overflows horizontally on narrow
+                // phones, and wider phones/tablets simply fit more pills
+                // per row. Each pill sizes itself to its own content
+                // (`mainAxisSize: MainAxisSize.min` inside the pill), so
+                // there is no shared-height measurement step to maintain
+                // any more.
+                FadeInUp(
+                  duration: const Duration(milliseconds: 420),
+                  delay: const Duration(milliseconds: 100),
+                  child: Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      for (final action in _kHomeQuickActions)
+                        _QuickActionPill(
+                          action: action,
+                          onTap: () => onSuggestionTap(action.prompt),
                         ),
-                        const SizedBox(height: 12),
-                        FadeInUp(
-                          duration: const Duration(milliseconds: 420),
-                          delay: const Duration(milliseconds: 140),
-                          child: IntrinsicHeight(
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                Expanded(
-                                  child: _QuickActionPill(
-                                    action: _kActionSummarize,
-                                    descriptionHeight: descriptionHeight,
-                                    onTap: () => onSuggestionTap(_kActionSummarize.prompt),
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: _QuickActionPill(
-                                    action: _kActionScript,
-                                    descriptionHeight: descriptionHeight,
-                                    onTap: () => onSuggestionTap(_kActionScript.prompt),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        FadeInUp(
-                          duration: const Duration(milliseconds: 420),
-                          delay: const Duration(milliseconds: 180),
-                          child: IntrinsicHeight(
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                Expanded(
-                                  child: _QuickActionPill(
-                                    action: _kActionTranslate,
-                                    descriptionHeight: descriptionHeight,
-                                    onTap: () => onSuggestionTap(_kActionTranslate.prompt),
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: _QuickActionPill(
-                                    action: _kActionExplainImage,
-                                    descriptionHeight: descriptionHeight,
-                                    onTap: () => onSuggestionTap(_kActionExplainImage.prompt),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    );
-                  },
+                    ],
+                  ),
                 ),
               ],
               ),
@@ -2127,71 +2047,26 @@ class _EmptyState extends StatelessWidget {
       ),
     );
   }
-
-  // Step 33.1 — Shared description-height measurement. Given the grid's
-  // available width (from the enclosing LayoutBuilder), computes the exact
-  // content width of one card's description text (half the grid, minus the
-  // 12px inter-column gap, minus the card's 14px+14px horizontal padding —
-  // matching `_QuickActionPillState`'s layout exactly), then uses a
-  // TextPainter — with the *same* font/size/weight/height/letterSpacing as
-  // the on-screen description Text — to measure how tall each of the six
-  // descriptions would need to be to render with zero clipping at that
-  // width. Returns the tallest of the six. This is recomputed on every
-  // build, so it stays correct across rotations, window resizes, and
-  // different device widths — never a hardcoded number.
-  double _sharedDescriptionHeight(double gridWidth) {
-    const double interColumnGap = 12;
-    const double cardHorizontalPadding = 14 * 2;
-    final double cardContentWidth =
-        ((gridWidth - interColumnGap) / 2) - cardHorizontalPadding;
-    final TextStyle descriptionStyle = GoogleFonts.poppins(
-      fontSize: 12.5,
-      fontWeight: FontWeight.w400,
-      height: 1.25,
-      letterSpacing: -0.05,
-    );
-    const List<_HomeQuickAction> allActions = [
-      _kActionAsk,
-      _kActionBrainstorm,
-      _kActionSummarize,
-      _kActionScript,
-      _kActionTranslate,
-      _kActionExplainImage,
-    ];
-    double tallest = 0;
-    for (final action in allActions) {
-      final TextPainter painter = TextPainter(
-        text: TextSpan(text: action.description, style: descriptionStyle),
-        textDirection: TextDirection.ltr,
-      )..layout(maxWidth: cardContentWidth > 0 ? cardContentWidth : 0);
-      if (painter.height > tallest) tallest = painter.height;
-    }
-    return tallest;
-  }
 }
 
-/// One quick-action card, matching the approved mockup exactly: a bare
-/// emerald outline icon top-left, a bold dark title, and a short gray
-/// description below it — uniformly rounded corners (no asymmetric
-/// "speech bubble" notch), no visible border, and a soft diffused shadow.
-/// Stretches to fill its half of the 2-column grid and to match its
-/// row-mate's height (see the `IntrinsicHeight` wrapper in `_EmptyState`),
-/// but is otherwise sized to its own content — never a fixed height. A
-/// quiet press-scale plus the platform ripple — no bounce.
+/// Step 37 — Home Quick Actions Redesign (Pill Style). One quick-action
+/// pill: a small emerald icon-in-circle followed by the title only — no
+/// description text. Fully rounded (`StadiumBorder`) with a soft diffused
+/// shadow and a white, faintly translucent "glass" background (a subtle
+/// border plus a slight opacity give it a light glassy edge without
+/// needing a blur filter). Content is a single `Row` whose default
+/// cross-axis alignment is `center`, so the icon and title are always
+/// vertically centered inside the pill regardless of its height. Sized to
+/// its own content (`MainAxisSize.min`) so it works naturally inside the
+/// enclosing `Wrap`, which is what makes the whole layout responsive
+/// across phone and tablet widths. Same quiet press-scale + ripple
+/// interaction as the card it replaces.
 class _QuickActionPill extends StatefulWidget {
   final _HomeQuickAction action;
   final VoidCallback onTap;
-  // Step 33.1: the shared description-slot height computed once per grid
-  // build in `_EmptyState._sharedDescriptionHeight` (the tallest of all
-  // six descriptions at the card's actual content width). Applying the
-  // same height to every card's description slot is what makes all six
-  // cards come out exactly the same height, while every description still
-  // renders in full with no maxLines/ellipsis/clipping.
-  final double descriptionHeight;
   const _QuickActionPill({
     required this.action,
     required this.onTap,
-    required this.descriptionHeight,
   });
 
   @override
@@ -2200,8 +2075,6 @@ class _QuickActionPill extends StatefulWidget {
 
 class _QuickActionPillState extends State<_QuickActionPill> {
   bool _pressed = false;
-
-  static const BorderRadius _cardRadius = BorderRadius.all(Radius.circular(18));
 
   void _setPressed(bool value) {
     if (_pressed != value) setState(() => _pressed = value);
@@ -2214,71 +2087,72 @@ class _QuickActionPillState extends State<_QuickActionPill> {
       onTapCancel: () => _setPressed(false),
       onTapUp: (_) => _setPressed(false),
       child: AnimatedScale(
-        scale: _pressed ? 0.98 : 1.0,
+        scale: _pressed ? 0.97 : 1.0,
         duration: const Duration(milliseconds: 120),
         curve: Curves.easeOut,
         // A soft, wide, low-opacity manual shadow (instead of Material's
-        // default directional elevation shadow) reads as far more
-        // premium/diffused, matching the mockup's gentle card shadow.
-        // Material itself is kept for the ink ripple only.
+        // default directional elevation shadow) reads as premium/diffused
+        // rather than a hard drop-shadow.
         child: Container(
           decoration: BoxDecoration(
-            borderRadius: _cardRadius,
+            shape: BoxShape.rectangle,
+            borderRadius: const BorderRadius.all(Radius.circular(100)),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(_pressed ? 0.04 : 0.07),
-                blurRadius: _pressed ? 10 : 16,
-                offset: const Offset(0, 4),
+                color: Colors.black.withOpacity(_pressed ? 0.04 : 0.08),
+                blurRadius: _pressed ? 10 : 18,
+                offset: const Offset(0, 6),
               ),
             ],
           ),
           child: Material(
-            color: _PakHome.card,
-            borderRadius: _cardRadius,
+            // "white / glass-like": a near-opaque white fill plus a
+            // hairline white-ish border reads as a soft glass pill against
+            // the app's light background, while staying fully legible.
+            color: _PakHome.card.withOpacity(0.94),
+            shape: StadiumBorder(
+              side: BorderSide(
+                color: Colors.white.withOpacity(0.6),
+                width: 1,
+              ),
+            ),
             child: InkWell(
-              borderRadius: _cardRadius,
+              customBorder: const StadiumBorder(),
               onTap: widget.onTap,
               child: Padding(
-                padding: const EdgeInsets.all(14),
-                child: Column(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
+                child: Row(
                   mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    Icon(widget.action.icon, size: 22, color: _PakHome.emerald),
-                    const SizedBox(height: 10),
-                    Text(
-                      widget.action.label,
-                      style: GoogleFonts.poppins(
-                        fontSize: 14.5,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: -0.1,
-                        color: _PakHome.text,
+                    Container(
+                      width: 28,
+                      height: 28,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: _PakHome.emerald.withOpacity(0.10),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        widget.action.icon,
+                        size: 16,
+                        color: _PakHome.emerald,
                       ),
                     ),
-                    const SizedBox(height: 3),
-                    // Step 33.1: no maxLines/ellipsis — the description
-                    // wraps and renders in full. `descriptionHeight` (the
-                    // shared tallest-of-six value from `_EmptyState`) sizes
-                    // this slot identically on every card, so text never
-                    // clips/overflows and all six cards line up at the
-                    // same total height. Same font/size/weight/line-height
-                    // as before — this is a layout fix, not a typography
-                    // change.
-                    SizedBox(
-                      height: widget.descriptionHeight,
-                      width: double.infinity,
-                      child: Align(
-                        alignment: Alignment.topLeft,
-                        child: Text(
-                          widget.action.description,
-                          softWrap: true,
-                          style: GoogleFonts.poppins(
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.w400,
-                            height: 1.25,
-                            letterSpacing: -0.05,
-                            color: _PakHome.secondaryText,
-                          ),
+                    const SizedBox(width: 10),
+                    Flexible(
+                      child: Text(
+                        widget.action.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: GoogleFonts.poppins(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: -0.1,
+                          color: _PakHome.text,
                         ),
                       ),
                     ),
