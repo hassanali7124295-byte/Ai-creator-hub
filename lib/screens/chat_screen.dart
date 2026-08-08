@@ -14,6 +14,7 @@ import '../core/providers/conversation_provider.dart';
 import '../core/services/attachment_processor_service.dart';
 import '../core/services/attachment_service.dart';
 import '../core/services/gemini_service.dart';
+import '../core/services/text_recognition_service.dart' show TextScanMode;
 import '../core/services/tts_voice_service.dart';
 import '../core/services/voice_input_service.dart';
 import '../core/theme/chat_palette.dart';
@@ -25,8 +26,10 @@ import '../widgets/attachment_preview.dart';
 import '../widgets/attachment_sheet.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/conversation_drawer.dart';
+import '../widgets/image_source_sheet.dart' show showImageSourceSheet;
 import '../widgets/pak_home_widgets.dart';
 import 'settings_screen.dart';
+import 'text_scan_result_screen.dart';
 
 /// Step 18.5: the mic button's three states — idle (normal mic icon),
 /// listening (animated equalizer, tap again to stop), and processing (a
@@ -1052,6 +1055,16 @@ class _ChatScreenState extends State<ChatScreen> {
     final type = await showAttachmentSheet(context);
     if (type == null || !mounted) return;
 
+    // Step 38: Scan Text (OCR) and Handwriting aren't chat attachments —
+    // they launch their own picker → recognition → result flow and, at
+    // most, fill the composer at the end. Handled separately, before the
+    // pending-attachment logic below, which stays untouched for the
+    // original four types.
+    if (type == AttachmentType.ocr || type == AttachmentType.handwriting) {
+      await _startTextScan(type);
+      return;
+    }
+
     try {
       List<AttachmentResult> results;
       switch (type) {
@@ -1071,6 +1084,11 @@ class _ChatScreenState extends State<ChatScreen> {
         case AttachmentType.file:
           results = await AttachmentService.pickMultipleFiles();
           break;
+        case AttachmentType.ocr:
+        case AttachmentType.handwriting:
+          // Unreachable — already handled and returned above. Present here
+          // only so this switch stays exhaustive over `AttachmentType`.
+          return;
       }
 
       if (!mounted || results.isEmpty) return;
@@ -1164,6 +1182,55 @@ class _ChatScreenState extends State<ChatScreen> {
           duration: Duration(seconds: 2),
         ),
       );
+    }
+  }
+
+  /// Step 38 — Scan Text (OCR) / Handwriting entry point, launched from the
+  /// attachment sheet. Asks for an image source (Camera/Gallery only, via
+  /// [showImageSourceSheet]), picks a single image, then pushes
+  /// [TextScanResultScreen] to run recognition and show the result.
+  ///
+  /// Only fills the composer — via [_applySuggestion], the same
+  /// fill-without-sending helper used by suggestion chips — if the person
+  /// taps "Use in Chat" there. Nothing is ever sent automatically, and
+  /// nothing here touches [_pendingAttachments] or the normal attachment
+  /// pipeline.
+  Future<void> _startTextScan(AttachmentType scanType) async {
+    final isOcr = scanType == AttachmentType.ocr;
+    final source = await showImageSourceSheet(
+      context,
+      title: isOcr ? 'Scan Text' : 'Handwriting',
+    );
+    if (source == null || !mounted) return;
+
+    AttachmentResult? picked;
+    try {
+      picked = source == AttachmentType.camera
+          ? await AttachmentService.pickFromCamera()
+          : await AttachmentService.pickFromGallery();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not access that source. Check app permissions.'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+    if (picked == null || !mounted) return;
+
+    final text = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => TextScanResultScreen(
+          image: picked!,
+          source: source,
+          mode: isOcr ? TextScanMode.ocr : TextScanMode.handwriting,
+        ),
+      ),
+    );
+    if (text != null && text.trim().isNotEmpty && mounted) {
+      _applySuggestion(text);
     }
   }
 

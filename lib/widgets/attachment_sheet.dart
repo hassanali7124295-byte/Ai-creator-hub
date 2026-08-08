@@ -1,7 +1,13 @@
 import 'package:flutter/material.dart';
 
 /// The kind of attachment source the user picked from [showAttachmentSheet].
-enum AttachmentType { gallery, camera, document, file }
+///
+/// Step 38: `ocr` and `handwriting` aren't attachment sources in the same
+/// sense as the original four — picking either one doesn't attach a file to
+/// the chat, it launches the Scan Text / Handwriting flow (see
+/// `ChatScreen._startTextScan`), which asks for its own Camera/Gallery
+/// source via `showImageSourceSheet` afterwards.
+enum AttachmentType { gallery, camera, document, file, ocr, handwriting }
 
 class _AttachmentOption {
   final AttachmentType type;
@@ -12,6 +18,12 @@ class _AttachmentOption {
 
 // Step 18.3: single row, ChatGPT (Android)-style ordering — Camera,
 // Gallery, Files, PDF.
+//
+// Step 38: two more entry points — Scan Text (OCR) and Handwriting —
+// appended after the original four. Kept in the same list/animation
+// sequence as the original options (see `_AttachmentSheetContentState`
+// below) rather than a separate widget, so the sheet still reads as one
+// consistent set of actions.
 const List<_AttachmentOption> _options = [
   _AttachmentOption(
       AttachmentType.camera, Icons.photo_camera_rounded, 'Camera'),
@@ -19,12 +31,16 @@ const List<_AttachmentOption> _options = [
   _AttachmentOption(AttachmentType.file, Icons.folder_rounded, 'Files'),
   _AttachmentOption(
       AttachmentType.document, Icons.picture_as_pdf_rounded, 'PDF'),
+  _AttachmentOption(
+      AttachmentType.ocr, Icons.document_scanner_rounded, 'Scan Text'),
+  _AttachmentOption(
+      AttachmentType.handwriting, Icons.draw_rounded, 'Handwriting'),
 ];
 
-/// Shows a clean, solid-white, ChatGPT(Android)-style bottom sheet with a
-/// single row of four large circular buttons — Camera, Gallery, Files, PDF.
-/// Returns the chosen [AttachmentType], or `null` if the sheet was
-/// dismissed without a selection.
+/// Shows a clean, solid-white, ChatGPT(Android)-style bottom sheet with
+/// large circular buttons — Camera, Gallery, Files, PDF, and (Step 38)
+/// Scan Text, Handwriting. Returns the chosen [AttachmentType], or `null`
+/// if the sheet was dismissed without a selection.
 Future<AttachmentType?> showAttachmentSheet(BuildContext context) {
   return showModalBottomSheet<AttachmentType>(
     context: context,
@@ -100,8 +116,16 @@ class _AttachmentSheetContentState extends State<_AttachmentSheetContent>
                   ),
                 ),
                 const SizedBox(height: 28),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                // Step 38: was a single-row `Row`; switched to `Wrap` so the
+                // two new options (Scan Text, Handwriting) flow onto a
+                // second line instead of squeezing all six into one row.
+                // Spacing/alignment intentionally mirror the old Row's
+                // `spaceEvenly` look — the original four buttons render
+                // identically to Step 37.
+                Wrap(
+                  alignment: WrapAlignment.spaceEvenly,
+                  spacing: 12,
+                  runSpacing: 22,
                   children: [
                     for (var i = 0; i < _options.length; i++)
                       _AttachmentButton(
