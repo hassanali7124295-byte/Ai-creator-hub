@@ -7,7 +7,20 @@ import 'package:flutter/material.dart';
 /// the chat, it launches the Scan Text / Handwriting flow (see
 /// `ChatScreen._startTextScan`), which asks for its own Camera/Gallery
 /// source via `showImageSourceSheet` afterwards.
-enum AttachmentType { gallery, camera, document, file, ocr, handwriting }
+///
+/// Step 39: `documentIntel` follows the same pattern — it doesn't attach a
+/// file to the chat either, it launches the Document Intelligence flow (see
+/// `ChatScreen._startDocumentIntelligence`), which asks for its own
+/// Camera/Gallery/PDF source via `showDocumentSourceSheet` afterwards.
+enum AttachmentType {
+  gallery,
+  camera,
+  document,
+  file,
+  ocr,
+  handwriting,
+  documentIntel,
+}
 
 class _AttachmentOption {
   final AttachmentType type;
@@ -24,6 +37,9 @@ class _AttachmentOption {
 // sequence as the original options (see `_AttachmentSheetContentState`
 // below) rather than a separate widget, so the sheet still reads as one
 // consistent set of actions.
+//
+// Step 39: one more entry point — Document AI (Advanced Document
+// Intelligence) — appended after Handwriting, same pattern.
 const List<_AttachmentOption> _options = [
   _AttachmentOption(
       AttachmentType.camera, Icons.photo_camera_rounded, 'Camera'),
@@ -35,12 +51,15 @@ const List<_AttachmentOption> _options = [
       AttachmentType.ocr, Icons.document_scanner_rounded, 'Scan Text'),
   _AttachmentOption(
       AttachmentType.handwriting, Icons.draw_rounded, 'Handwriting'),
+  _AttachmentOption(
+      AttachmentType.documentIntel, Icons.auto_awesome_rounded, 'Document AI'),
 ];
 
 /// Shows a clean, solid-white, ChatGPT(Android)-style bottom sheet with
-/// large circular buttons — Camera, Gallery, Files, PDF, and (Step 38)
-/// Scan Text, Handwriting. Returns the chosen [AttachmentType], or `null`
-/// if the sheet was dismissed without a selection.
+/// large circular buttons — Camera, Gallery, Files, PDF, (Step 38) Scan
+/// Text, Handwriting, and (Step 39) Document AI. Returns the chosen
+/// [AttachmentType], or `null` if the sheet was dismissed without a
+/// selection.
 Future<AttachmentType?> showAttachmentSheet(BuildContext context) {
   return showModalBottomSheet<AttachmentType>(
     context: context,

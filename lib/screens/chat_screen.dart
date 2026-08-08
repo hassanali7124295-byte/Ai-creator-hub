@@ -26,8 +26,10 @@ import '../widgets/attachment_preview.dart';
 import '../widgets/attachment_sheet.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/conversation_drawer.dart';
+import '../widgets/document_source_sheet.dart' show showDocumentSourceSheet;
 import '../widgets/image_source_sheet.dart' show showImageSourceSheet;
 import '../widgets/pak_home_widgets.dart';
+import 'document_intelligence_screen.dart';
 import 'settings_screen.dart';
 import 'text_scan_result_screen.dart';
 
@@ -1065,6 +1067,17 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
 
+    // Step 39: Document AI (Advanced Document Intelligence) follows the
+    // same pattern as OCR/Handwriting above — it isn't a chat attachment,
+    // it launches its own picker → analysis → result flow, and only fills
+    // the composer (via "Use in Chat") at the end. Handled here, before the
+    // pending-attachment logic below, which stays untouched for the
+    // original four types.
+    if (type == AttachmentType.documentIntel) {
+      await _startDocumentIntelligence();
+      return;
+    }
+
     try {
       List<AttachmentResult> results;
       switch (type) {
@@ -1086,6 +1099,7 @@ class _ChatScreenState extends State<ChatScreen> {
           break;
         case AttachmentType.ocr:
         case AttachmentType.handwriting:
+        case AttachmentType.documentIntel:
           // Unreachable — already handled and returned above. Present here
           // only so this switch stays exhaustive over `AttachmentType`.
           return;
@@ -1226,6 +1240,61 @@ class _ChatScreenState extends State<ChatScreen> {
           image: picked!,
           source: source,
           mode: isOcr ? TextScanMode.ocr : TextScanMode.handwriting,
+        ),
+      ),
+    );
+    if (text != null && text.trim().isNotEmpty && mounted) {
+      _applySuggestion(text);
+    }
+  }
+
+  /// Step 39 — Document AI (Advanced Document Intelligence) entry point,
+  /// launched from the attachment sheet. Asks for a source (Camera/
+  /// Gallery/PDF, via [showDocumentSourceSheet]), picks a single
+  /// image/document, then pushes [DocumentIntelligenceScreen] to run
+  /// analysis and show the result.
+  ///
+  /// Only fills the composer — via [_applySuggestion] — if the person taps
+  /// "Use in Chat" there. Nothing is ever sent automatically, and nothing
+  /// here touches [_pendingAttachments] or the normal attachment pipeline.
+  Future<void> _startDocumentIntelligence() async {
+    final source = await showDocumentSourceSheet(context);
+    if (source == null || !mounted) return;
+
+    AttachmentResult? picked;
+    try {
+      switch (source) {
+        case AttachmentType.camera:
+          picked = await AttachmentService.pickFromCamera();
+          break;
+        case AttachmentType.gallery:
+          picked = await AttachmentService.pickFromGallery();
+          break;
+        case AttachmentType.document:
+          picked = await AttachmentService.pickDocument();
+          break;
+        default:
+          picked = null;
+      }
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not access that source. Check app permissions.'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+    // The person cancelled the picker (backed out of camera/gallery/file
+    // browser) — nothing to do, no error to show.
+    if (picked == null || !mounted) return;
+
+    final text = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => DocumentIntelligenceScreen(
+          file: picked!,
+          source: source,
         ),
       ),
     );
