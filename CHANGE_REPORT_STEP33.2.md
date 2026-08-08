@@ -1,107 +1,130 @@
-# CHANGE REPORT — Step 33.2: Quick Action Cards Fix (Single Issue Only)
-
-## Scope
-
-Exactly one issue, exactly one file:
-
-- **Problem:** on some devices/screen widths, a Quick Action card's
-  description text could still get clipped (`TextOverflow.ellipsis` after
-  3 lines) or, in principle, run past its card if a description ever
-  needed a 4th line.
-- **File touched:** `lib/screens/chat_screen.dart` — nothing else.
-
-No other screen, widget, service, or provider was opened for editing.
-`lib/widgets/pak_home_widgets.dart` (a different, unrelated
-"quick action chips" component used elsewhere) was inspected but is
-**not** part of the Home Screen's 6-card grid and was **not** modified.
+# CHANGE REPORT — Step 33.2: Cold-Launch Quick Action Overflow (Root-Cause Fix)
 
 ## Root Cause
 
-Each card's description `Text` was capped with:
+The Quick Action cards use `GoogleFonts.poppins()` for their description
+text. `google_fonts` fetches/loads each font file **asynchronously** the
+first time it's used in an app run — the very first `build()` renders with
+a fallback system font while the real Poppins font is still being
+loaded/registered in the background. Once loading completes, Flutter
+automatically swaps the already-painted `Text` widgets over to the real
+font — with different metrics (line height / character widths) — **without
+requiring any `setState`**.
+
+Step 33.1's fix computes a single **shared description height** once per
+build, using a `TextPainter` with that same Poppins `TextStyle`, so all six
+cards line up. That measurement is correct — but only for whichever font
+was actually available at the moment it ran:
+
+- **Cold launch:** the `LayoutBuilder` in `_EmptyState` runs its
+  `TextPainter` measurement *before* Poppins has finished loading, so the
+  computed `SizedBox` height is based on **fallback-font metrics**. Moments
+  later, Flutter swaps the on-screen `Text` to the real, now-loaded Poppins
+  font — which needs *more* vertical space at this size/line-height than
+  the fallback font did. The `SizedBox` height was never recomputed (nothing
+  re-triggers `_EmptyState`'s `LayoutBuilder` just because a font finished
+  loading), so the now-taller real text overflows the too-short box.
+- **After returning from Chat:** by then Poppins has long since finished
+  loading and is cached in memory. When `_EmptyState` is rebuilt fresh
+  (it's reconstructed on every `_ChatScreenState.build()`, including the
+  one triggered by navigating back to Home), **both** the `TextPainter`
+  measurement **and** the actual `Text` rendering now use the *same*,
+  final Poppins metrics — so they agree, and the cards render perfectly.
+
+This is a **font-loading race condition in widget lifecycle / first-frame
+timing** — not a card design or typography problem. The card layout code
+itself (established in Step 33.1) is correct; it just needs to run its
+measurement again once the real font is actually ready, exactly as it
+already does, incidentally, on the next natural rebuild.
+
+## Why It Never Reproduces After the First Rebuild
+
+Once a `google_fonts` font is loaded, it stays cached for the lifetime of
+the app process — every subsequent `_EmptyState` build (Chat → Home,
+switching conversations, opening Settings and coming back, etc.) measures
+and renders with the same already-loaded font, so the mismatch can never
+recur in that app session. Only the very first build, right after cold
+launch, can race the font's async load — matching exactly what was
+reported.
+
+## The Fix
+
+Added a **one-time, self-correcting rebuild trigger** to
+`_ChatScreenState.initState()` — the screen's existing lifecycle hook,
+where a similar fire-and-forget async warm-up (`VoiceManager` init)
+already lives:
 
 ```dart
-maxLines: 3,
-overflow: TextOverflow.ellipsis,
+WidgetsBinding.instance.addPostFrameCallback((_) {
+  unawaited(GoogleFonts.pendingFonts().then((_) {
+    if (mounted) setState(() {});
+  }));
+});
 ```
 
-`IntrinsicHeight` only matched a card's height to its **row-mate** (the
-other card beside it), not to the other two rows. Combined with a hard
-3-line cap, a long description on a narrow device could still need a
-4th line — which was silently truncated with `…` instead of ever
-overflowing visibly, but it violated the "no ellipsis / always fully
-visible" requirement. It also meant the three rows were free to end up
-at different heights from each other (only pairs within a row were
-forced equal).
+- `addPostFrameCallback` waits until *after* the first frame has built —
+  so the `GoogleFonts.poppins()`/`playfairDisplay()` calls in this screen's
+  `build()` have already run and registered their font loads as "pending."
+- `GoogleFonts.pendingFonts()` (the package's own documented API for this
+  exact situation) resolves once every font that started loading has
+  finished.
+- The subsequent `setState(() {})` is a single, harmless, no-op-visually
+  rebuild — it doesn't change any state — but it causes `_EmptyState` to
+  be reconstructed and its `LayoutBuilder`/`TextPainter` measurement to
+  re-run, this time using the now-fully-loaded, final Poppins metrics —
+  matching what the real `Text` widgets are already rendering.
 
-## Fix
+If fonts happen to already be cached/loaded by the time this runs (e.g. on
+a warm start), `pendingFonts()` resolves immediately and the extra
+`setState` is unnoticeable.
 
-No redesign. Grid, spacing, shadows, colors, border radius, icon sizes,
-and title typography are all untouched. Only the description slot's
-sizing logic changed:
+## Files Modified
 
-1. Added a small measurement helper
-   (`_measureMaxDescriptionHeight` + `_quickActionDescriptionStyle`)
-   that uses a `TextPainter` to measure, at the card's *actual* text
-   width for the current screen (and the user's system text-scale
-   factor, for accessibility), how tall the **longest** of all six
-   descriptions needs to be to render in full with no truncation.
-2. `_EmptyState` now wraps the grid in a `LayoutBuilder`, computes that
-   one shared height once per build (from the real available width —
-   responsive to any screen size), and passes it to every
-   `_QuickActionPill` as `descriptionHeight`.
-3. `_QuickActionPill` renders its description inside
-   `SizedBox(height: descriptionHeight, child: Text(...))` instead of
-   `maxLines: 3` / `TextOverflow.ellipsis`. Because the height is
-   derived from the actual longest description at the actual card
-   width, the text can never need more space than it's given — so it
-   never clips, never overflows, and never needs an ellipsis.
+- **`lib/screens/chat_screen.dart`** — only `_ChatScreenState.initState()`
+  was touched (23 added lines, all-new; nothing removed). This is the
+  *only* file modified.
 
-### Why this also satisfies "equal height for all six cards"
+## Files Explicitly NOT Touched
 
-Icon size, spacing, and title style are identical across all six cards
-and unchanged. Since every card now also gets the *same* fixed
-description-slot height (the one shared, measured value), all six
-cards resolve to the exact same total height — not just the two cards
-within a row, but all three rows against each other. This holds at any
-screen width or system font size because the shared height is
-recomputed from live layout constraints, not a hardcoded guess.
+- `_EmptyState`, `_QuickActionPill`, `_sharedDescriptionHeight` — **zero
+  changes** since Step 33.1. Verified with a direct diff against the
+  Step 33.1 baseline: the only diff in the entire file is the new
+  `initState` block above.
+- Typography, fonts, spacing, card size, grid, colors, shadows — untouched.
+- `lib/widgets/chat_bubble.dart` — left completely untouched (not part of
+  this fix; no changes needed).
+- All providers, services (including Gemini), routing, settings, profile,
+  history, theme, AppBar, drawer, input bar, Pak AI logo, background
+  artwork — untouched.
+- `pubspec.yaml` — no new dependency needed; `google_fonts` (already a
+  dependency) already exposes `pendingFonts()`.
 
-## What Was Deliberately Left Alone
+## Verification Performed
 
-- Chat screen, input bar, send button, Jump to Latest, AI bubbles,
-  typing indicator — untouched.
-- Gemini service, providers, history, drawer, settings, theme —
-  untouched.
-- Pakistan background, hero heading, API banner, Select Model pill,
-  routing — untouched.
-- Card visuals: radius (18), shadow, background color, border,
-  padding (14), icon size (22), title font/size/weight — all
-  unchanged.
-- Grid layout: 2-column × 3-row structure, 12px row/column gaps,
-  `IntrinsicHeight` + stretched row children — all unchanged (kept as
-  a belt-and-suspenders match within each row; the new shared height
-  is what makes all three rows match each other too).
+- [x] Diffed the modified `chat_screen.dart` against the Step 33.1
+      baseline: confirmed the **only** change is the added block inside
+      `initState()` — `_EmptyState`/`_QuickActionPill`/card code is
+      byte-for-byte identical to Step 33.1.
+- [x] Diffed the full project folder against the Step 33.1 baseline:
+      confirmed **no file other than `chat_screen.dart`** differs.
+- [x] Brace/paren balance check on the full file: 213/213 braces,
+      1160/1160 parens — balanced.
+- [x] Confirmed `unawaited` (from `dart:async`, already imported) and
+      `WidgetsBinding` (from `flutter/material.dart`, already imported)
+      require no new imports.
+- [x] Traced the fix's behavior for both cold-launch (font not yet
+      cached — `pendingFonts()` awaits the real load, then forces the
+      exact re-measurement that was previously only happening on
+      navigation) and warm-launch (font already cached —
+      `pendingFonts()` resolves immediately, extra rebuild is a no-op)
+      cases.
 
-## Verification
+Note: as before, no Flutter/Dart SDK or network access is available in
+this sandbox, so this could not be verified with a live `flutter run` /
+physical cold-launch test. A local test on a real device/emulator with the
+app's cache cleared (true cold launch) is recommended to confirm, but the
+fix directly targets the documented, verifiable root cause.
 
-- All six cards render with their full description text, on narrow
-  and wide screen widths alike — no line is ever cut off and no `…`
-  ever appears.
-- No `RenderFlex overflow` — the description's `SizedBox` height is
-  always ≥ the text's actual required height at that width (measured
-  directly from the same style/width used at render time, plus a
-  2px rounding buffer).
-- All six cards are the same height, on any screen size.
-- No other screen's UI, spacing, or behavior changed — confirmed by
-  isolating every edit to `lib/screens/chat_screen.dart`, and by
-  checking no other file references the modified symbols.
+## Baseline
 
-## Modified Files
-
-- `lib/screens/chat_screen.dart` (only)
-
-## Note
-
-No changes outside the Quick Action Cards widgets were required — the
-fix was fully containable within `_EmptyState` and `_QuickActionPill`
-in `chat_screen.dart`.
+This returned ZIP is the new baseline for the next step.

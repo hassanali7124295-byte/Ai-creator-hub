@@ -265,6 +265,28 @@ class _ChatScreenState extends State<ChatScreen> {
     // `VoiceManager.toggle` awaits the same setup itself before speaking —
     // never blocks or delays the tap itself.
     unawaited(VoiceManager.instance.ensureInitialized());
+
+    // Step 33.2 — root-cause fix for the cold-launch Quick Action overflow
+    // (see CHANGE_REPORT_STEP33.2.md): on a cold launch, GoogleFonts
+    // (Poppins/Playfair) may still be downloading/registering in the
+    // background the first time this screen builds. The Home screen's
+    // Quick Action description sizing is measured with a TextPainter using
+    // those same font styles; if that measurement runs before the real
+    // font finishes loading, it's based on fallback-font metrics, while
+    // Flutter later swaps the already-painted Text to the real font
+    // automatically once it's ready — with different metrics than what was
+    // measured, but nothing re-triggers the measurement to match. Waiting
+    // one frame (so the fonts referenced in this build have actually
+    // started loading) and then awaiting `GoogleFonts.pendingFonts()`
+    // before doing a single harmless `setState` forces exactly one clean
+    // rebuild once the real fonts are ready — the same rebuild that
+    // already happens naturally (and fixes the layout) the first time the
+    // person navigates away and back.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(GoogleFonts.pendingFonts().then((_) {
+        if (mounted) setState(() {});
+      }));
+    });
   }
 
   /// Mirrors `VoiceManager`'s active id into `_speakingIndex` — the local
