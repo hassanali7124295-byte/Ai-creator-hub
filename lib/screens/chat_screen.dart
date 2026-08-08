@@ -265,28 +265,6 @@ class _ChatScreenState extends State<ChatScreen> {
     // `VoiceManager.toggle` awaits the same setup itself before speaking —
     // never blocks or delays the tap itself.
     unawaited(VoiceManager.instance.ensureInitialized());
-
-    // Step 33.2 — root-cause fix for the cold-launch Quick Action overflow
-    // (see CHANGE_REPORT_STEP33.2.md): on a cold launch, GoogleFonts
-    // (Poppins/Playfair) may still be downloading/registering in the
-    // background the first time this screen builds. The Home screen's
-    // Quick Action description sizing is measured with a TextPainter using
-    // those same font styles; if that measurement runs before the real
-    // font finishes loading, it's based on fallback-font metrics, while
-    // Flutter later swaps the already-painted Text to the real font
-    // automatically once it's ready — with different metrics than what was
-    // measured, but nothing re-triggers the measurement to match. Waiting
-    // one frame (so the fonts referenced in this build have actually
-    // started loading) and then awaiting `GoogleFonts.pendingFonts()`
-    // before doing a single harmless `setState` forces exactly one clean
-    // rebuild once the real fonts are ready — the same rebuild that
-    // already happens naturally (and fixes the layout) the first time the
-    // person navigates away and back.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(GoogleFonts.pendingFonts().then((_) {
-        if (mounted) setState(() {});
-      }));
-    });
   }
 
   /// Mirrors `VoiceManager`'s active id into `_speakingIndex` — the local
@@ -313,6 +291,34 @@ class _ChatScreenState extends State<ChatScreen> {
       _isLoadingHistory = false;
     });
     _scrollToBottom(force: true);
+
+    // Step 36 — root-cause fix for the cold-launch Quick Action overflow
+    // (see CHANGE_REPORT_STEP36.md). `_EmptyState` (and its Poppins
+    // `_sharedDescriptionHeight` TextPainter measurement) is only ever
+    // built for the first time right here, once `_isLoadingHistory`
+    // becomes false above and — when the conversation is empty — the
+    // Home quick-action grid mounts. That first build is what actually
+    // requests the Poppins font from GoogleFonts; before this point,
+    // nothing in the tree has asked for Poppins yet (the AppBar title
+    // above only ever requests Playfair Display), so an earlier
+    // `GoogleFonts.pendingFonts()` call (as Step 33.2 attempted, from
+    // `initState`) has nothing Poppins-related to await and resolves
+    // immediately — long before Poppins itself has finished downloading.
+    // Waiting one frame *after* this setState (so `_EmptyState` has
+    // actually built and requested Poppins) and then awaiting
+    // `GoogleFonts.pendingFonts()` correctly tracks that real, in-flight
+    // Poppins load; the single corrective `setState()` once it resolves
+    // forces `_EmptyState` to rebuild and re-measure with the real font
+    // metrics — the same recompute that already happens naturally (and
+    // fixes the layout) the first time the person navigates away and
+    // back to Home.
+    if (_messages.isEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(GoogleFonts.pendingFonts().then((_) {
+          if (mounted) setState(() {});
+        }));
+      });
+    }
   }
 
   /// Swaps `_messages` to a different conversation's history. Stops any
