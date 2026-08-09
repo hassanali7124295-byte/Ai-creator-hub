@@ -45,9 +45,24 @@ dependencies:
   share_plus: ^10.1.3      # native share sheet for the "Share" action
   flutter_tts: ^4.2.0      # on-device text-to-speech for "Read Aloud"
 
-  # Step 18.5: mic-button voice input — continuous speech recognition,
-  # handles its own microphone permission prompt on first use.
+  # Step 18.5: continuous speech recognition service — no longer wired to
+  # the chat composer's mic button as of Step 43 (see
+  # `lib/core/services/voice_input_service.dart`), kept in the project
+  # since nothing else was asked to be removed and a future step may still
+  # want dictation elsewhere.
   speech_to_text: ^7.0.0
+
+  # Step 43 — Proper Voice Message System: the mic button now records real
+  # audio instead of transcribing speech. `record` handles the actual
+  # microphone capture (and, like `speech_to_text` above, its own mic
+  # permission prompt via its bundled Android/iOS manifest entries — no
+  # manual manifest edit needed). `audioplayers` plays the resulting file
+  # back for the in-composer preview and for sent voice-message bubbles.
+  # `path_provider` is only used to pick a writable temp-file location for
+  # each new recording.
+  record: ^5.1.2
+  audioplayers: ^6.1.0
+  path_provider: ^2.1.4
 
   # Step 17: Rate App (Play Store deep link) and outbound links from the
   # About / Privacy Policy screens.

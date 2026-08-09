@@ -434,7 +434,10 @@ class _ChatBubbleState extends State<ChatBubble> {
                       ),
                     ),
                   )
-                else
+                // Step 43: a voice message stores an empty `text` (its
+                // meaning is entirely the audio attachment above) — skip
+                // the empty `Text` so no stray blank line shows under it.
+                else if (message.text.isNotEmpty)
                   Text(
                     message.text,
                     style: theme.textTheme.bodyMedium?.copyWith(color: textColor),

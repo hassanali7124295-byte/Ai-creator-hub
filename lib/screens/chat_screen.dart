@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:animate_do/animate_do.dart';
 import 'package:flutter/material.dart';
@@ -17,7 +18,8 @@ import '../core/services/document_intelligence_service.dart';
 import '../core/services/gemini_service.dart';
 import '../core/services/text_recognition_service.dart';
 import '../core/services/tts_voice_service.dart';
-import '../core/services/voice_input_service.dart';
+import '../core/services/voice_playback_service.dart';
+import '../core/services/voice_recorder_service.dart';
 import '../core/theme/chat_palette.dart';
 import '../models/ai_mode.dart';
 import '../models/chat_attachment.dart';
@@ -34,10 +36,20 @@ import 'document_intelligence_screen.dart';
 import 'settings_screen.dart';
 import 'text_scan_result_screen.dart';
 
-/// Step 18.5: the mic button's three states — idle (normal mic icon),
-/// listening (animated equalizer, tap again to stop), and processing (a
-/// brief spinner while the final result settles before returning to idle).
-enum _MicState { idle, listening, processing }
+/// Step 43 — Proper Voice Message System: the mic button's states.
+/// `idle` is the normal composer (mic icon, ready to tap). `recording`
+/// shows the compact "Recording 00:08 · Cancel · ✓ Done" bar in place of
+/// the normal input row. `preview` shows the recorded voice message —
+/// play/pause, duration, delete, Send — still with an empty text
+/// composer underneath. `sending` is the brief moment the voice message
+/// is being turned into a sent chat bubble.
+///
+/// This replaces the pre-Step-43 `_MicState` (idle/listening/processing),
+/// which drove continuous speech-to-text streamed into the composer —
+/// removed from the mic button along with that flow (see Part 1 of the
+/// Step 43 brief). `VoiceInputService`/`speech_to_text` are left in the
+/// project untouched, just no longer wired up here.
+enum _VoiceRecordState { idle, recording, preview, sending }
 
 /// Step 40 — Chat-Native Intelligence UX Refactor (Part 2): the outcome of
 /// local, keyword-based intent routing for a single image/PDF attachment
@@ -279,12 +291,25 @@ class _ChatScreenState extends State<ChatScreen> {
   // chat starts fresh in General AI mode.
   AiMode _mode = AiMode.general;
 
-  // Voice input (Step 18.5): continuous speech recognition behind the mic
-  // button. `_voiceInput` is only initialized the first time the person
-  // taps the mic (see `_onVoiceTap`), so the OS permission prompt never
-  // fires just from opening the chat screen.
-  final VoiceInputService _voiceInput = VoiceInputService();
-  _MicState _micState = _MicState.idle;
+  // Voice messages (Step 43): real audio recording behind the mic button
+  // — see `_VoiceRecordState` above. `_voiceRecorder` only touches the mic
+  // the first time the person taps the button (see `_startRecording`), so
+  // the OS permission prompt never fires just from opening the chat
+  // screen.
+  final VoiceRecorderService _voiceRecorder = VoiceRecorderService();
+  _VoiceRecordState _recordState = _VoiceRecordState.idle;
+
+  // Live "Recording 00:08" timer, ticked every second while
+  // `_recordState == recording`.
+  Duration _recordElapsed = Duration.zero;
+  Timer? _recordTimer;
+
+  // The just-finished recording, held in memory while `_recordState ==
+  // preview` — its local temp path plus the duration captured at record
+  // time (used as the preview/sent-bubble duration label before real
+  // playback duration is known).
+  String? _recordedPath;
+  Duration _recordedDuration = Duration.zero;
 
   // Step 40 — Chat-Native Intelligence UX Refactor (Part 6): mirrors the
   // existing `_isStreaming`/`_liveStreamIndex` pattern above, but for a
@@ -421,15 +446,14 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_speakingIndex != null) {
       await VoiceManager.instance.stop();
     }
-    // Step 42 — Conversation Safety: a still-listening voice session keeps
-    // streaming recognized words into `_inputController` (see
-    // `_onVoiceTap`) even while `_isSending` is false, so switching
-    // conversations mid-listen (not otherwise blocked, unlike an in-flight
-    // send) could leave a stray transcription typed into the composer of
-    // the *new* conversation. Cancel it first, same pattern `_sendMessage`
-    // already uses.
-    if (_micState != _MicState.idle) {
-      await _voiceInput.cancel();
+    await VoicePlaybackManager.instance.stop();
+    // Step 42/43 — Conversation Safety: a recording or a still-in-preview
+    // voice message belongs to the conversation being left, not the one
+    // being opened — cancel/discard it first, same pattern `_sendMessage`
+    // already uses. `_cancelRecording` covers both the actively-recording
+    // and already-stopped/preview cases, and is a no-op if idle.
+    if (_recordState != _VoiceRecordState.idle) {
+      await _cancelRecording();
     }
     _stopGenerating();
     await provider.selectConversation(id);
@@ -442,7 +466,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _streamingMessage = null;
       _pendingAttachments.clear();
       _attachmentsLocked = false;
-      _micState = _MicState.idle;
+      _recordState = _VoiceRecordState.idle;
       // Step 40: in-memory-only smart-routing state belongs to the
       // conversation being left, not the one being opened.
       _activeDocument = null;
@@ -465,10 +489,11 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_speakingIndex != null) {
       await VoiceManager.instance.stop();
     }
-    // Step 42 — Conversation Safety: see the matching cancel in
+    await VoicePlaybackManager.instance.stop();
+    // Step 42/43 — Conversation Safety: see the matching cancel in
     // `_switchConversation` above.
-    if (_micState != _MicState.idle) {
-      await _voiceInput.cancel();
+    if (_recordState != _VoiceRecordState.idle) {
+      await _cancelRecording();
     }
     _stopGenerating();
     final id = await provider.startNewConversation();
@@ -481,7 +506,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _streamingMessage = null;
       _pendingAttachments.clear();
       _attachmentsLocked = false;
-      _micState = _MicState.idle;
+      _recordState = _VoiceRecordState.idle;
       // Step 40: see the matching reset in `_switchConversation` above.
       _activeDocument = null;
       _activeDocumentQaTurns = const [];
@@ -508,7 +533,15 @@ class _ChatScreenState extends State<ChatScreen> {
     unawaited(VoiceManager.instance.stop());
     _streamFlushTimer?.cancel();
     _streamSubscription?.cancel();
-    _voiceInput.cancel();
+    // Step 43 — Conversation Safety/Cleanup: a recording still in
+    // progress (or a not-yet-sent preview) when the screen is torn down
+    // must not leak — stop/delete it and release the recorder. Playback
+    // is stopped too, matching the existing `VoiceManager.instance.stop()`
+    // call above for TTS.
+    _recordTimer?.cancel();
+    unawaited(_voiceRecorder.cancel());
+    _voiceRecorder.dispose();
+    unawaited(VoicePlaybackManager.instance.stop());
     super.dispose();
   }
 
@@ -619,15 +652,12 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _sendMessage() async {
-    // If voice input is still active, stop it *before* reading the field:
-    // a listening session keeps streaming recognized words into
-    // `_inputController` (see `_onVoiceTap`'s `onResult`), so leaving it
-    // running would let a late speech result repopulate the field right
-    // after it's cleared below, leaving stale/duplicate text behind.
-    if (_micState != _MicState.idle) {
-      await _voiceInput.cancel();
-      if (mounted) setState(() => _micState = _MicState.idle);
-    }
+    // Step 43: the normal Send button only ever sends the typed-text/
+    // attachment composer — a voice message in progress or in preview has
+    // its own explicit Send (see `_sendVoiceMessage`), so this text send
+    // path is a no-op while one is active rather than silently discarding
+    // it.
+    if (_recordState != _VoiceRecordState.idle) return;
 
     final text = _inputController.text.trim();
     // Snapshot the pending list — everything below works off this local
@@ -1838,12 +1868,14 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _clearChat() async {
-    // Step 42 — Conversation Safety: same voice-cancel as
-    // `_switchConversation`/`_startNewChat` — no reason to keep streaming
-    // recognized words into the composer once the conversation they'd
-    // belong to is gone.
-    if (_micState != _MicState.idle) {
-      await _voiceInput.cancel();
+    // Step 42/43 — Conversation Safety: same voice-cancel as
+    // `_switchConversation`/`_startNewChat` — no reason to keep a
+    // recording or an unsent preview around once the conversation it'd
+    // belong to is gone. Playback is stopped too, in case the person had
+    // a sent voice message playing.
+    await VoicePlaybackManager.instance.stop();
+    if (_recordState != _VoiceRecordState.idle) {
+      await _cancelRecording();
     }
     setState(() {
       _messages.clear();
@@ -1853,7 +1885,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _activeDocumentQaTurns = const [];
       _smartErrorIndex = null;
       _smartRetryAction = null;
-      _micState = _MicState.idle;
+      _recordState = _VoiceRecordState.idle;
     });
     await context.read<ConversationProvider>().clearCurrentMessages();
   }
@@ -2168,74 +2200,147 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() => _mode = chosen);
   }
 
-  /// Toggles the mic button: idle → starts a continuous listening session,
-  /// listening → stops it. Recognized speech is streamed straight into
-  /// `_inputController` as it comes in (see `startListening`'s `onResult`)
-  /// so the person can review and edit it — sending is always a separate,
-  /// explicit tap on Send, never automatic.
-  Future<void> _onVoiceTap() async {
-    if (_micState == _MicState.listening) {
-      HapticFeedback.selectionClick();
-      await _voiceInput.stop();
-      if (!mounted) return;
-      setState(() => _micState = _MicState.processing);
-      // A short, deliberate beat while the engine settles on its final
-      // transcript — mirrors the quick "processing" blip ChatGPT shows
-      // between tapping stop and the mic returning to idle.
-      await Future.delayed(const Duration(milliseconds: 350));
-      if (!mounted) return;
-      setState(() => _micState = _MicState.idle);
-      return;
-    }
-
-    if (_micState == _MicState.processing) return;
+  /// Starts a new recording: idle → recording. Checks/prompts for the mic
+  /// permission first (only right when tapped, never on screen load), and
+  /// never loops the OS prompt — a denial just shows a friendly message
+  /// once (Part 11).
+  Future<void> _startRecording() async {
+    if (_recordState != _VoiceRecordState.idle || _isSending) return;
 
     HapticFeedback.selectionClick();
-    final status = await _voiceInput.ensureReady();
+    final status = await _voiceRecorder.ensureReady();
     if (!mounted) return;
 
     switch (status) {
-      case VoiceReadyStatus.permissionDenied:
+      case VoiceRecorderReadyStatus.permissionDenied:
         _showVoiceSnack(
-          'Microphone access is required for voice input. '
+          'Microphone access is required to record a voice message. '
           'Please allow it in your device settings.',
         );
         return;
-      case VoiceReadyStatus.unavailable:
-        _showVoiceSnack('Speech recognition isn\'t available on this device.');
+      case VoiceRecorderReadyStatus.unavailable:
+        _showVoiceSnack('Recording isn\'t available on this device.');
         return;
-      case VoiceReadyStatus.ready:
+      case VoiceRecorderReadyStatus.ready:
         break;
     }
 
-    setState(() => _micState = _MicState.listening);
-
-    final started = await _voiceInput.startListening(
-      onResult: (text, isFinal) {
-        if (!mounted) return;
-        _inputController.text = text;
-        _inputController.selection =
-            TextSelection.collapsed(offset: text.length);
-      },
-      onDone: () {
-        if (!mounted || _micState != _MicState.listening) return;
-        setState(() => _micState = _MicState.idle);
-      },
-      onError: (message) {
-        if (!mounted) return;
-        setState(() => _micState = _MicState.idle);
-        _showVoiceSnack(message);
-      },
-    );
-
-    if (!started && mounted) {
-      setState(() => _micState = _MicState.idle);
+    final started = await _voiceRecorder.start();
+    if (!mounted) return;
+    if (!started) {
+      _showVoiceSnack('Could not start recording. Please try again.');
+      return;
     }
+
+    setState(() {
+      _recordState = _VoiceRecordState.recording;
+      _recordElapsed = Duration.zero;
+    });
+    _recordTimer?.cancel();
+    _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() => _recordElapsed += const Duration(seconds: 1));
+    });
   }
 
-  /// A friendly, floating SnackBar for voice-input problems (permission
-  /// denied, no speech detected, no network, etc.) — never a crash, always
-  /// a clear next step.
+  /// Stops the in-progress recording and keeps the file — the "✓ Done"
+  /// tap: recording → preview. The composer's text field stays untouched
+  /// (and empty) throughout; nothing here ever writes to
+  /// `_inputController`.
+  Future<void> _stopRecordingToPreview() async {
+    if (_recordState != _VoiceRecordState.recording) return;
+    HapticFeedback.selectionClick();
+    _recordTimer?.cancel();
+    final elapsed = _recordElapsed;
+    final path = await _voiceRecorder.stop();
+    if (!mounted) return;
+
+    if (path == null) {
+      setState(() => _recordState = _VoiceRecordState.idle);
+      _showVoiceSnack('Recording failed. Please try again.');
+      return;
+    }
+
+    setState(() {
+      _recordedPath = path;
+      _recordedDuration = elapsed;
+      _recordState = _VoiceRecordState.preview;
+    });
+  }
+
+  /// Discards the current recording — whether still in progress or
+  /// already stopped and sitting in preview — and returns to the normal
+  /// composer. Used by the recording bar's "Cancel", the preview bar's
+  /// delete button, and every conversation-safety call site above.
+  Future<void> _cancelRecording() async {
+    _recordTimer?.cancel();
+    await VoicePlaybackManager.instance
+        .stopIfActive(_recordedPath ?? _voiceRecorder.currentPath ?? '');
+    await _voiceRecorder.cancel();
+    if (_recordedPath != null) {
+      await VoiceRecorderService.deleteFile(_recordedPath);
+    }
+    if (!mounted) return;
+    setState(() {
+      _recordState = _VoiceRecordState.idle;
+      _recordElapsed = Duration.zero;
+      _recordedPath = null;
+      _recordedDuration = Duration.zero;
+    });
+  }
+
+  /// Sends the recorded voice message as a normal chat bubble — preview →
+  /// sending → idle. Per Part 8, the recorded audio is kept exactly as
+  /// the user's voice message rather than silently transcribed back to
+  /// text: the existing Gemini chat pipeline is text-only, so this simply
+  /// appends the message to the conversation (same as every other message
+  /// kind) without inventing a new Gemini request shape for audio.
+  Future<void> _sendVoiceMessage() async {
+    final path = _recordedPath;
+    if (_recordState != _VoiceRecordState.preview || path == null) return;
+
+    setState(() => _recordState = _VoiceRecordState.sending);
+    await VoicePlaybackManager.instance.stopIfActive(path);
+
+    int sizeBytes = 0;
+    try {
+      sizeBytes = await File(path).length();
+    } catch (_) {
+      // Best-effort — a missing/unreadable size just shows blank, same
+      // fallback `AttachmentPreview._sizeLabel` already handles.
+    }
+
+    final attachment = ChatAttachment(
+      name: 'Voice message',
+      mimeType: 'audio/m4a',
+      sizeBytes: sizeBytes,
+      kind: ChatAttachmentKind.audio,
+      path: path,
+      durationMs: _recordedDuration.inMilliseconds,
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _messages.add(ChatMessage(
+        text: '',
+        isUser: true,
+        attachments: [attachment],
+      ));
+      _recordState = _VoiceRecordState.idle;
+      _recordedPath = null;
+      _recordedDuration = Duration.zero;
+      // Step 40: a fresh attachment starts a fresh document context, same
+      // as any other new attachment sent via `_sendMessage`.
+      _activeDocument = null;
+      _activeDocumentQaTurns = const [];
+    });
+    _scrollToBottom(force: true);
+    unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
+  }
+
+  /// A friendly, floating SnackBar for voice-message problems (permission
+  /// denied, recording/playback failure, etc.) — never a crash, always a
+  /// clear next step.
   void _showVoiceSnack(String message) {
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
@@ -2555,17 +2660,267 @@ class _ChatScreenState extends State<ChatScreen> {
                 child: _ModePill(mode: _mode, onTap: _pickMode),
               ),
             ),
-            _ChatInputBar(
-              controller: _inputController,
-              isSending: _isSending,
-              isStreaming: _isStreaming,
-              onSend: _sendMessage,
-              onStop: _stopGenerating,
-              onAttachment: _openAttachmentSheet,
-              onVoice: _onVoiceTap,
-              micState: _micState,
+            // Step 43: while a recording is in progress or sitting in
+            // preview, the normal composer row (attachment/text/mic/send)
+            // is swapped out entirely for the compact recording/preview
+            // bar — never a second screen, never text typed into
+            // `_inputController` (Parts 3/4/12).
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 180),
+              switchInCurve: Curves.easeOut,
+              switchOutCurve: Curves.easeIn,
+              transitionBuilder: (child, animation) => FadeTransition(
+                opacity: animation,
+                child: SizeTransition(
+                  sizeFactor: animation,
+                  axisAlignment: -1,
+                  child: child,
+                ),
+              ),
+              child: switch (_recordState) {
+                _VoiceRecordState.idle => _ChatInputBar(
+                    key: const ValueKey('composer'),
+                    controller: _inputController,
+                    isSending: _isSending,
+                    isStreaming: _isStreaming,
+                    onSend: _sendMessage,
+                    onStop: _stopGenerating,
+                    onAttachment: _openAttachmentSheet,
+                    onVoice: _startRecording,
+                  ),
+                _VoiceRecordState.recording => _VoiceRecordingBar(
+                    key: const ValueKey('recording'),
+                    elapsed: _recordElapsed,
+                    onCancel: _cancelRecording,
+                    onDone: _stopRecordingToPreview,
+                  ),
+                _VoiceRecordState.preview ||
+                _VoiceRecordState.sending =>
+                  _VoiceMessagePreviewBar(
+                    key: const ValueKey('preview'),
+                    path: _recordedPath ?? '',
+                    duration: _recordedDuration,
+                    isSending: _recordState == _VoiceRecordState.sending,
+                    onDelete: _cancelRecording,
+                    onSend: _sendVoiceMessage,
+                  ),
+              },
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Step 43 — Proper Voice Message System (Part 3): the compact bar shown
+/// in place of the normal composer while a recording is in progress —
+/// "🎙️ Recording 00:08 · Cancel · ✓ Done". Lives inside the same rounded
+/// pill footprint the normal `_ChatInputBar` uses, so the composer area
+/// never visibly jumps in height when recording starts/stops.
+class _VoiceRecordingBar extends StatelessWidget {
+  final Duration elapsed;
+  final VoidCallback onCancel;
+  final VoidCallback onDone;
+
+  const _VoiceRecordingBar({
+    super.key,
+    required this.elapsed,
+    required this.onCancel,
+    required this.onDone,
+  });
+
+  String get _label {
+    final totalSeconds = elapsed.inSeconds;
+    final minutes = totalSeconds ~/ 60;
+    final seconds = totalSeconds % 60;
+    return '$minutes:${seconds.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+        child: Container(
+          constraints: const BoxConstraints(minHeight: 52),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                theme.colorScheme.surfaceContainerHigh,
+                theme.colorScheme.surfaceContainerHigh.withOpacity(0.96),
+              ],
+            ),
+            borderRadius: BorderRadius.circular(28),
+            boxShadow: [
+              BoxShadow(
+                color: theme.colorScheme.shadow.withOpacity(isDark ? 0.06 : 0.08),
+                blurRadius: 18,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: Row(
+            children: [
+              _VoiceEqualizer(color: theme.colorScheme.error),
+              const SizedBox(width: 10),
+              Text(
+                'Recording $_label',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: theme.colorScheme.onSurface,
+                ),
+              ),
+              const Spacer(),
+              TextButton(
+                onPressed: () {
+                  HapticFeedback.selectionClick();
+                  onCancel();
+                },
+                child: const Text('Cancel'),
+              ),
+              const SizedBox(width: 4),
+              Material(
+                color: theme.colorScheme.primary,
+                shape: const CircleBorder(),
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: () {
+                    HapticFeedback.mediumImpact();
+                    onDone();
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.all(9),
+                    child: Icon(
+                      Icons.check_rounded,
+                      size: 18,
+                      color: theme.colorScheme.onPrimary,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Step 43 — Proper Voice Message System (Part 4): the compact bar shown
+/// in place of the normal composer once a recording has been stopped —
+/// "🎙️ Voice message ▶ 0:08 · Send", with a delete button to discard it
+/// instead. Reuses `AttachmentPreview`'s audio-chip rendering (via a
+/// throwaway in-memory `ChatAttachment`) so the preview looks and behaves
+/// exactly like the same message will once it's sent — same play button,
+/// same progress bar, same `VoicePlaybackManager`.
+class _VoiceMessagePreviewBar extends StatelessWidget {
+  final String path;
+  final Duration duration;
+  final bool isSending;
+  final VoidCallback onDelete;
+  final VoidCallback onSend;
+
+  const _VoiceMessagePreviewBar({
+    super.key,
+    required this.path,
+    required this.duration,
+    required this.isSending,
+    required this.onDelete,
+    required this.onSend,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+        child: Container(
+          constraints: const BoxConstraints(minHeight: 52),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                theme.colorScheme.surfaceContainerHigh,
+                theme.colorScheme.surfaceContainerHigh.withOpacity(0.96),
+              ],
+            ),
+            borderRadius: BorderRadius.circular(28),
+            boxShadow: [
+              BoxShadow(
+                color: theme.colorScheme.shadow.withOpacity(isDark ? 0.06 : 0.08),
+                blurRadius: 18,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: AttachmentPreview(
+                  attachment: ChatAttachment(
+                    name: 'Voice message',
+                    mimeType: 'audio/m4a',
+                    sizeBytes: 0,
+                    kind: ChatAttachmentKind.audio,
+                    path: path,
+                    durationMs: duration.inMilliseconds,
+                  ),
+                  locked: isSending,
+                  onRemove: isSending
+                      ? null
+                      : () {
+                          HapticFeedback.selectionClick();
+                          onDelete();
+                        },
+                ),
+              ),
+              const SizedBox(width: 8),
+              Material(
+                color: theme.colorScheme.primary,
+                shape: const CircleBorder(),
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: isSending
+                      ? null
+                      : () {
+                          HapticFeedback.mediumImpact();
+                          onSend();
+                        },
+                  child: Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: isSending
+                        ? SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: theme.colorScheme.onPrimary,
+                            ),
+                          )
+                        : Icon(
+                            Icons.arrow_upward_rounded,
+                            size: 18,
+                            color: theme.colorScheme.onPrimary,
+                          ),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -3261,9 +3616,9 @@ class _ChatInputBar extends StatefulWidget {
   final VoidCallback onStop;
   final VoidCallback onAttachment;
   final VoidCallback onVoice;
-  final _MicState micState;
 
   const _ChatInputBar({
+    super.key,
     required this.controller,
     required this.isSending,
     required this.isStreaming,
@@ -3271,7 +3626,6 @@ class _ChatInputBar extends StatefulWidget {
     required this.onStop,
     required this.onAttachment,
     required this.onVoice,
-    required this.micState,
   });
 
   @override
@@ -3424,61 +3778,29 @@ class _ChatInputBarState extends State<_ChatInputBar> {
               Padding(
                 padding: const EdgeInsets.only(bottom: 2),
                 child: Tooltip(
-                  message: switch (widget.micState) {
-                    _MicState.listening => 'Listening — tap to stop',
-                    _MicState.processing => 'Processing',
-                    _MicState.idle => 'Voice input',
-                  },
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    curve: Curves.easeOut,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: widget.micState == _MicState.listening
-                          ? theme.colorScheme.primary.withOpacity(0.14)
-                          : Colors.transparent,
-                    ),
-                    child: Material(
-                      color: Colors.transparent,
-                      shape: const CircleBorder(),
-                      child: InkWell(
-                        customBorder: const CircleBorder(),
-                        // Voice input is toggled on every tap regardless of
-                        // state — including mid-listen — so the button never
-                        // feels stuck; while processing, tapping again just
-                        // re-starts a fresh session once it settles.
-                        onTap: () {
-                          HapticFeedback.selectionClick();
-                          onVoice();
-                        },
-                        child: Padding(
-                          padding: const EdgeInsets.all(11),
-                          child: AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 200),
-                            transitionBuilder: (child, animation) =>
-                                FadeTransition(opacity: animation, child: child),
-                            child: switch (widget.micState) {
-                              _MicState.listening => _VoiceEqualizer(
-                                  key: const ValueKey('listening'),
-                                  color: theme.colorScheme.primary,
-                                ),
-                              _MicState.processing => SizedBox(
-                                  key: const ValueKey('processing'),
-                                  width: 21,
-                                  height: 21,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: theme.colorScheme.onSurfaceVariant,
-                                  ),
-                                ),
-                              _MicState.idle => Icon(
-                                  Icons.mic_none_rounded,
-                                  key: const ValueKey('idle'),
-                                  size: 21,
-                                  color: theme.colorScheme.onSurfaceVariant,
-                                ),
-                            },
-                          ),
+                  message: 'Record a voice message',
+                  child: Material(
+                    color: Colors.transparent,
+                    shape: const CircleBorder(),
+                    child: InkWell(
+                      customBorder: const CircleBorder(),
+                      // Step 43: a single tap always starts a new
+                      // recording — the toggle/listening states this
+                      // button used to have (continuous speech-to-text)
+                      // are gone; once recording starts, this whole
+                      // composer is swapped out for `_VoiceRecordingBar`
+                      // (see the parent screen's build method), so this
+                      // button is never shown again until idle.
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        onVoice();
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.all(11),
+                        child: Icon(
+                          Icons.mic_none_rounded,
+                          size: 21,
+                          color: theme.colorScheme.onSurfaceVariant,
                         ),
                       ),
                     ),

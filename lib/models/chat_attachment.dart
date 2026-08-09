@@ -2,13 +2,20 @@
 /// adding a new kind later (e.g. `audio`) only requires a new enum value
 /// plus one branch in `AttachmentProcessorService`; nothing else in the
 /// model or storage layer needs to change.
-enum ChatAttachmentKind { image, pdf, file }
+///
+/// Step 43 — Proper Voice Message System: `audio` is that new kind. Unlike
+/// `image`/`pdf`/`file`, an audio attachment is never handed to
+/// `AttachmentProcessorService`/Gemini — it's a self-contained recorded
+/// voice message that lives entirely in chat history and plays back
+/// on-device (see `AttachmentPreview`'s audio branch).
+enum ChatAttachmentKind { image, pdf, file, audio }
 
 extension ChatAttachmentKindX on ChatAttachmentKind {
   String get wireName => switch (this) {
         ChatAttachmentKind.image => 'image',
         ChatAttachmentKind.pdf => 'pdf',
         ChatAttachmentKind.file => 'file',
+        ChatAttachmentKind.audio => 'audio',
       };
 
   static ChatAttachmentKind fromWireName(String? value) {
@@ -17,6 +24,8 @@ extension ChatAttachmentKindX on ChatAttachmentKind {
         return ChatAttachmentKind.image;
       case 'pdf':
         return ChatAttachmentKind.pdf;
+      case 'audio':
+        return ChatAttachmentKind.audio;
       default:
         return ChatAttachmentKind.file;
     }
@@ -43,12 +52,19 @@ class ChatAttachment {
   final ChatAttachmentKind kind;
   final String? path;
 
+  /// Step 43: playback duration for a voice message (`kind == audio`
+  /// only). `null` for every other kind, and for any history saved before
+  /// this step — same optional-field pattern as `documentResult` on
+  /// `ChatMessage`.
+  final int? durationMs;
+
   const ChatAttachment({
     required this.name,
     required this.mimeType,
     required this.sizeBytes,
     required this.kind,
     this.path,
+    this.durationMs,
   });
 
   Map<String, dynamic> toJson() => {
@@ -57,6 +73,7 @@ class ChatAttachment {
         'sizeBytes': sizeBytes,
         'kind': kind.wireName,
         'path': path,
+        if (durationMs != null) 'durationMs': durationMs,
       };
 
   factory ChatAttachment.fromJson(Map<String, dynamic> json) => ChatAttachment(
@@ -65,5 +82,6 @@ class ChatAttachment {
         sizeBytes: json['sizeBytes'] as int? ?? 0,
         kind: ChatAttachmentKindX.fromWireName(json['kind'] as String?),
         path: json['path'] as String?,
+        durationMs: json['durationMs'] as int?,
       );
 }
