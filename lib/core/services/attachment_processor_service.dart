@@ -159,6 +159,21 @@ class AttachmentProcessorService {
         return _processPdf(result, bytes);
       case ChatAttachmentKind.file:
         return _processGenericFile(result, bytes, originalMimeType);
+      case ChatAttachmentKind.audio:
+        // Step 45: `classify()` above never returns `.audio` — voice
+        // messages are recorded by `VoiceRecorderService` and built as a
+        // `ChatAttachment` directly in `chat_screen.dart`, entirely
+        // bypassing this picker-driven pipeline (see the class doc comment
+        // and `ChatAttachmentKind.audio`'s doc comment). So this case is
+        // unreachable in practice; it exists only so the switch is
+        // exhaustive. It deliberately throws rather than silently falling
+        // through to image/PDF/generic-file handling, so an audio
+        // attachment can never accidentally be sent to Gemini, OCR, or
+        // document intelligence if this method is ever reached with one.
+        throw AttachmentException(
+          'Voice messages are handled separately and should never be '
+          'processed here.',
+        );
     }
   }
 
