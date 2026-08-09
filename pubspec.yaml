@@ -60,7 +60,14 @@ dependencies:
   # back for the in-composer preview and for sent voice-message bubbles.
   # `path_provider` is only used to pick a writable temp-file location for
   # each new recording.
-  record: ^5.1.2
+  # Step 44: bumped from ^5.1.2 — the old constraint resolved to
+  # record_linux 0.7.2, which is missing an interface member
+  # (`startStream`) added by a newer record_platform_interface and fails
+  # to compile. record ^6.2.1 resolves a record_linux release that
+  # implements the full interface. No API usage in
+  # voice_recorder_service.dart changed (it already used the
+  # AudioRecorder/RecordConfig/aacLc surface that 6.2.1 also uses).
+  record: ^6.2.1
   audioplayers: ^6.1.0
   path_provider: ^2.1.4
 
