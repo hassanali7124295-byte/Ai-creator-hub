@@ -298,6 +298,30 @@ class _ChatScreenState extends State<ChatScreen> {
   PreparedDocument? _activeDocument;
   List<DocumentQaTurn> _activeDocumentQaTurns = const [];
 
+  // Step 41 — Document Intelligence Reliability & Timeout Fix.
+  //
+  // `GeminiService.sendMessage()` already has its own internal per-request
+  // timeout (30/60/180s depending on payload — see Step 23), so a single
+  // Gemini call was never *literally* unbounded. But that cap is shared
+  // with every other Gemini call in the app (plain chat, generic image
+  // understanding, etc.) and, at 180s for image attachments, is longer
+  // than reasonable for this specific chat-native "Analyzing the
+  // document…" / "Reading your document…" moment — during real-device
+  // testing this combined with normal network variance to leave the
+  // loading bubble showing for well over 5 minutes before the user saw
+  // any result or error.
+  //
+  // Rather than changing `GeminiService`'s shared timeout (which would
+  // also affect normal text chat and generic image/PDF chat — explicitly
+  // out of scope), a second, narrowly-scoped deadline is applied here, at
+  // the smart-document call sites only, via `Future.timeout()`. This
+  // guarantees the smart-document loading state can never outlast this
+  // duration, regardless of how long anything deeper in the chain (Gemini
+  // itself, or a slow network) takes — the existing `finally` blocks in
+  // `_runSmartCapability`/`_runDocumentFollowUp` then clean up
+  // `_isSmartProcessing` immediately once this fires.
+  static const Duration _kSmartOperationTimeout = Duration(seconds: 90);
+
   @override
   void initState() {
     super.initState();
@@ -1005,6 +1029,11 @@ class _ChatScreenState extends State<ChatScreen> {
           final scan = await TextRecognitionService.recognizeFromPart(
             part: part,
             mode: mode,
+          ).timeout(
+            _kSmartOperationTimeout,
+            onTimeout: () => throw TextRecognitionException(
+              'This is taking too long. Please try again.',
+            ),
           );
           result = _buildScanResultMessage(scan);
           break;
@@ -1022,7 +1051,13 @@ class _ChatScreenState extends State<ChatScreen> {
                 : null,
             extractedText: processed.extractedText,
           );
-          final analysis = await DocumentIntelligenceService.analyze(doc);
+          final analysis = await DocumentIntelligenceService.analyze(doc)
+              .timeout(
+            _kSmartOperationTimeout,
+            onTimeout: () => throw DocumentIntelligenceException(
+              'Document analysis took too long. Please try again.',
+            ),
+          );
           _activeDocument = doc;
           _activeDocumentQaTurns = const [];
           result = ChatMessage(
@@ -1102,6 +1137,11 @@ class _ChatScreenState extends State<ChatScreen> {
         doc,
         question,
         priorTurns: _activeDocumentQaTurns,
+      ).timeout(
+        _kSmartOperationTimeout,
+        onTimeout: () => throw DocumentIntelligenceException(
+          'This is taking too long. Please try again.',
+        ),
       );
       if (!mounted) return;
       final result = ChatMessage(text: turn.answer, isUser: false);
