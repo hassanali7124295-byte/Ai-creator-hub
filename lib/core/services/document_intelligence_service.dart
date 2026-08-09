@@ -35,6 +35,29 @@ class DocumentTable {
     required this.headers,
     required this.rows,
   });
+
+  /// Step 40: serialization so a table can ride inside a [ChatMessage]'s
+  /// persisted `documentResult` map (chat-native result card) — the
+  /// structure itself is untouched, this is purely additive.
+  Map<String, dynamic> toJson() => {
+        if (caption != null) 'caption': caption,
+        'headers': headers,
+        'rows': rows,
+      };
+
+  factory DocumentTable.fromJson(Map<String, dynamic> json) => DocumentTable(
+        caption: json['caption'] as String?,
+        headers: (json['headers'] as List<dynamic>?)
+                ?.map((e) => e.toString())
+                .toList() ??
+            const [],
+        rows: (json['rows'] as List<dynamic>?)
+                ?.map((row) => (row as List<dynamic>)
+                    .map((c) => c.toString())
+                    .toList())
+                .toList() ??
+            const [],
+      );
 }
 
 /// The structured outcome of a successful [DocumentIntelligenceService.analyze]
@@ -81,6 +104,60 @@ class DocumentIntelligenceResult {
       numbers.isNotEmpty ||
       keyFacts.isNotEmpty ||
       tables.isNotEmpty;
+
+  /// Step 40: serialization so a full analysis can ride inside a
+  /// [ChatMessage]'s persisted `documentResult` map, letting
+  /// `DocumentResultCard` re-render the same compact/expandable card after
+  /// an app restart (conversation history reload) exactly as it looked
+  /// live. The analysis/parsing logic itself is untouched — purely
+  /// additive.
+  Map<String, dynamic> toJson() => {
+        if (documentType != null) 'documentType': documentType,
+        'summary': summary,
+        'keyPoints': keyPoints,
+        'headings': headings,
+        'dates': dates,
+        'names': names,
+        'numbers': numbers,
+        'keyFacts': keyFacts,
+        'tables': tables.map((t) => t.toJson()).toList(),
+        if (rawFallbackText != null) 'rawFallbackText': rawFallbackText,
+      };
+
+  factory DocumentIntelligenceResult.fromJson(Map<String, dynamic> json) =>
+      DocumentIntelligenceResult(
+        documentType: json['documentType'] as String?,
+        summary: json['summary'] as String? ?? '',
+        keyPoints: (json['keyPoints'] as List<dynamic>?)
+                ?.map((e) => e.toString())
+                .toList() ??
+            const [],
+        headings: (json['headings'] as List<dynamic>?)
+                ?.map((e) => e.toString())
+                .toList() ??
+            const [],
+        dates: (json['dates'] as List<dynamic>?)
+                ?.map((e) => e.toString())
+                .toList() ??
+            const [],
+        names: (json['names'] as List<dynamic>?)
+                ?.map((e) => e.toString())
+                .toList() ??
+            const [],
+        numbers: (json['numbers'] as List<dynamic>?)
+                ?.map((e) => e.toString())
+                .toList() ??
+            const [],
+        keyFacts: (json['keyFacts'] as List<dynamic>?)
+                ?.map((e) => e.toString())
+                .toList() ??
+            const [],
+        tables: (json['tables'] as List<dynamic>?)
+                ?.map((t) => DocumentTable.fromJson(t as Map<String, dynamic>))
+                .toList() ??
+            const [],
+        rawFallbackText: json['rawFallbackText'] as String?,
+      );
 }
 
 /// A document the user has picked and prepared for analysis — holds

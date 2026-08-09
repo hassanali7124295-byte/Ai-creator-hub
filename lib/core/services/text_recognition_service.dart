@@ -68,6 +68,21 @@ class TextRecognitionService {
     required AttachmentType source,
   }) async {
     final part = await _prepareImage(image, source);
+    return recognizeFromPart(part: part, mode: mode);
+  }
+
+  /// Step 40 — Chat-Native Intelligence UX Refactor: same recognition as
+  /// [recognize], but for an image [part] that's already been processed
+  /// elsewhere (chat-native routing already runs every attachment through
+  /// [AttachmentProcessorService.process] once to build the sent message's
+  /// attachment preview) — skips reading/compressing the file a second
+  /// time. [recognize] above is unchanged and still used by the standalone
+  /// Scan Text / Handwriting flow, which has no such already-processed
+  /// part to reuse.
+  static Future<TextRecognitionResult> recognizeFromPart({
+    required GeminiInlinePart part,
+    required TextScanMode mode,
+  }) async {
     final reply = await _askGemini(part, mode);
     return mode == TextScanMode.ocr
         ? _parseOcrReply(reply)

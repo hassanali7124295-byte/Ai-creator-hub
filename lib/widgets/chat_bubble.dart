@@ -4,8 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
+import '../core/services/document_intelligence_service.dart';
 import '../models/chat_message.dart';
 import 'attachment_preview.dart';
+import 'document_result_card.dart';
 
 /// A single chat bubble, aligned right (user) or left (AI), with distinct
 /// colors, Markdown rendering for AI replies, an error state for failed
@@ -61,6 +63,15 @@ class ChatBubble extends StatefulWidget {
   /// the list pinned to the bottom as the reply grows. Safe to leave null.
   final VoidCallback? onStreamTick;
 
+  /// Step 40 — Chat-Native Intelligence UX Refactor (Part 6): the label
+  /// shown next to the pulsing dot while [isLive] is true and the message
+  /// has no text yet. Defaults to the existing streaming label so normal
+  /// AI replies are unaffected; the chat screen overrides this with a
+  /// specific status ("Reading your document…", "Extracting text…",
+  /// "Analyzing the document…") while a smart-routed capability is
+  /// in flight.
+  final String liveLabel;
+
   const ChatBubble({
     super.key,
     required this.message,
@@ -74,6 +85,7 @@ class ChatBubble extends StatefulWidget {
     this.animate = false,
     this.isLive = false,
     this.onStreamTick,
+    this.liveLabel = 'Writing...',
   });
 
   @override
@@ -257,12 +269,12 @@ class _ChatBubbleState extends State<ChatBubble> {
                   : const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
               constraints: BoxConstraints(
                 // Step 12.4: the user bubble is kept noticeably smaller —
-                // about 68% of the screen. Step 33 widened AI replies to
-                // ~89%; Step 34 nudges that a little further to ~92% —
-                // ChatGPT/Claude-width — width only; padding, font, and
-                // colors are untouched.
+                // about 68% of the screen. Step 33: AI replies now use a
+                // much wider, ChatGPT/Claude-style reading column (~89%
+                // of the available width) instead of the old 80% cap —
+                // width only; padding, font, and colors are untouched.
                 maxWidth: MediaQuery.of(context).size.width *
-                    (isUser ? 0.68 : 0.92),
+                    (isUser ? 0.68 : 0.89),
               ),
               decoration: BoxDecoration(
                 color: bubbleColor,
@@ -335,7 +347,20 @@ class _ChatBubbleState extends State<ChatBubble> {
                 // inside the bubble that will hold the answer — no more
                 // three-dot typing bubble.
                 if (showLiveTypingDots)
-                  const _InlineLiveDot(label: 'Writing...')
+                  _InlineLiveDot(label: widget.liveLabel)
+                // Step 40 — Chat-Native Intelligence UX Refactor (Part 4):
+                // a Document Intelligence result renders as a compact,
+                // expandable card instead of the plain Markdown body.
+                // `message.text` still holds the flat summary (used by
+                // Copy/Share/history/follow-up context above and
+                // unaffected by this branch) — this is purely additional,
+                // richer rendering for that one message.
+                else if (isAiReply && message.documentResult != null)
+                  DocumentResultCard(
+                    result: DocumentIntelligenceResult.fromJson(
+                      message.documentResult!,
+                    ),
+                  )
                 // AI replies render as Markdown (bold, lists, code blocks,
                 // etc.) at a slightly larger size with roomier line
                 // spacing for readability; user/error text stays plain.

@@ -2,16 +2,24 @@ import 'package:flutter/material.dart';
 
 /// The kind of attachment source the user picked from [showAttachmentSheet].
 ///
-/// Step 38: `ocr` and `handwriting` aren't attachment sources in the same
-/// sense as the original four — picking either one doesn't attach a file to
-/// the chat, it launches the Scan Text / Handwriting flow (see
-/// `ChatScreen._startTextScan`), which asks for its own Camera/Gallery
-/// source via `showImageSourceSheet` afterwards.
+/// Step 38: `ocr` and `handwriting` were added as attachment-sheet options
+/// launching the standalone Scan Text / Handwriting flow (see
+/// `ChatScreen._startTextScan`).
 ///
-/// Step 39: `documentIntel` follows the same pattern — it doesn't attach a
-/// file to the chat either, it launches the Document Intelligence flow (see
-/// `ChatScreen._startDocumentIntelligence`), which asks for its own
-/// Camera/Gallery/PDF source via `showDocumentSourceSheet` afterwards.
+/// Step 39: `documentIntel` followed the same pattern for the standalone
+/// Document Intelligence flow (see `ChatScreen._startDocumentIntelligence`).
+///
+/// Step 40 — Chat-Native Intelligence UX Refactor: these three are no
+/// longer shown as attachment-sheet options (see `_options` below) — the
+/// underlying capabilities (`TextRecognitionService`,
+/// `DocumentIntelligenceService`) are untouched and still fully used, just
+/// triggered automatically from local intent routing on a normal
+/// image/PDF attachment + natural-language message (see
+/// `ChatScreen._detectSmartIntent`) instead of a manual picker option. The
+/// enum values themselves are kept (not deleted) since
+/// `_startTextScan`/`_startDocumentIntelligence` and their standalone
+/// result screens still reference them and remain valid, reachable code —
+/// only now unreachable via this sheet's UI.
 enum AttachmentType {
   gallery,
   camera,
@@ -32,14 +40,12 @@ class _AttachmentOption {
 // Step 18.3: single row, ChatGPT (Android)-style ordering — Camera,
 // Gallery, Files, PDF.
 //
-// Step 38: two more entry points — Scan Text (OCR) and Handwriting —
-// appended after the original four. Kept in the same list/animation
-// sequence as the original options (see `_AttachmentSheetContentState`
-// below) rather than a separate widget, so the sheet still reads as one
-// consistent set of actions.
-//
-// Step 39: one more entry point — Document AI (Advanced Document
-// Intelligence) — appended after Handwriting, same pattern.
+// Step 38 added Scan Text / Handwriting here; Step 39 added Document AI.
+// Step 40 — Chat-Native Intelligence UX Refactor: removed all three from
+// this visible list (Part 1) — they're now hidden capabilities, triggered
+// automatically from natural-language requests on a normal image/PDF
+// attachment instead of being manually selected here. Back to the
+// original four user-facing choices, unchanged in icon/label/order.
 const List<_AttachmentOption> _options = [
   _AttachmentOption(
       AttachmentType.camera, Icons.photo_camera_rounded, 'Camera'),
@@ -47,18 +53,11 @@ const List<_AttachmentOption> _options = [
   _AttachmentOption(AttachmentType.file, Icons.folder_rounded, 'Files'),
   _AttachmentOption(
       AttachmentType.document, Icons.picture_as_pdf_rounded, 'PDF'),
-  _AttachmentOption(
-      AttachmentType.ocr, Icons.document_scanner_rounded, 'Scan Text'),
-  _AttachmentOption(
-      AttachmentType.handwriting, Icons.draw_rounded, 'Handwriting'),
-  _AttachmentOption(
-      AttachmentType.documentIntel, Icons.auto_awesome_rounded, 'Document AI'),
 ];
 
 /// Shows a clean, solid-white, ChatGPT(Android)-style bottom sheet with
-/// large circular buttons — Camera, Gallery, Files, PDF, (Step 38) Scan
-/// Text, Handwriting, and (Step 39) Document AI. Returns the chosen
-/// [AttachmentType], or `null` if the sheet was dismissed without a
+/// large circular buttons — Camera, Gallery, Files, PDF. Returns the
+/// chosen [AttachmentType], or `null` if the sheet was dismissed without a
 /// selection.
 Future<AttachmentType?> showAttachmentSheet(BuildContext context) {
   return showModalBottomSheet<AttachmentType>(

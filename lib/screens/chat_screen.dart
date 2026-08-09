@@ -13,8 +13,9 @@ import 'package:share_plus/share_plus.dart';
 import '../core/providers/conversation_provider.dart';
 import '../core/services/attachment_processor_service.dart';
 import '../core/services/attachment_service.dart';
+import '../core/services/document_intelligence_service.dart';
 import '../core/services/gemini_service.dart';
-import '../core/services/text_recognition_service.dart' show TextScanMode;
+import '../core/services/text_recognition_service.dart';
 import '../core/services/tts_voice_service.dart';
 import '../core/services/voice_input_service.dart';
 import '../core/theme/chat_palette.dart';
@@ -37,6 +38,14 @@ import 'text_scan_result_screen.dart';
 /// listening (animated equalizer, tap again to stop), and processing (a
 /// brief spinner while the final result settles before returning to idle).
 enum _MicState { idle, listening, processing }
+
+/// Step 40 — Chat-Native Intelligence UX Refactor (Part 2): the outcome of
+/// local, keyword-based intent routing for a single image/PDF attachment
+/// sent together with a typed instruction. `none` means the phrasing was
+/// ambiguous (or no attachment/text combination applies) and the existing,
+/// unchanged normal image/document understanding flow should be used
+/// instead — never a second Gemini call just to decide.
+enum _SmartIntent { none, ocr, handwriting, documentIntel }
 
 // Step 23/24: per-request attachment limits. Images beyond
 // `_kMaxImagesPerRequest` are rejected at pick time; anything at or under
@@ -257,6 +266,38 @@ class _ChatScreenState extends State<ChatScreen> {
   final VoiceInputService _voiceInput = VoiceInputService();
   _MicState _micState = _MicState.idle;
 
+  // Step 40 — Chat-Native Intelligence UX Refactor (Part 6): mirrors the
+  // existing `_isStreaming`/`_liveStreamIndex` pattern above, but for a
+  // discrete (non-token-streamed) smart-routed capability run — OCR,
+  // Handwriting, Document Intelligence analysis, or a document Q&A
+  // follow-up. `_smartProcessingLabel` drives the in-bubble loading dot's
+  // text (see `ChatBubble.liveLabel`) with a status specific to what's
+  // actually running ("Reading your document…", "Extracting text…",
+  // "Analyzing the document…").
+  bool _isSmartProcessing = false;
+  int? _smartProcessingIndex;
+  String _smartProcessingLabel = '';
+
+  // Step 40 (Part 10): when a smart-routed capability's own error bubble
+  // is the most recent message, its Retry action needs to re-run that
+  // exact capability (reusing already-processed attachment data) rather
+  // than the generic `_retryLastMessage`, which only knows how to re-ask
+  // Gemini a plain text prompt. `_smartErrorIndex` identifies which
+  // message (if any) this applies to; `_smartRetryAction` is the closure
+  // that re-runs it.
+  int? _smartErrorIndex;
+  VoidCallback? _smartRetryAction;
+
+  // Step 40 (Part 5/8): the most recently analyzed document, cached so a
+  // follow-up question doesn't need the file read/compressed/extracted
+  // again — reused directly by `DocumentIntelligenceService.askQuestion`.
+  // Cleared whenever a new attachment is sent (Step 40 (Part 2) — a fresh
+  // attachment always starts a fresh context) or the conversation is
+  // switched/cleared/started fresh, since a `PreparedDocument` is in-memory
+  // only and conversation-specific.
+  PreparedDocument? _activeDocument;
+  List<DocumentQaTurn> _activeDocumentQaTurns = const [];
+
   @override
   void initState() {
     super.initState();
@@ -347,6 +388,14 @@ class _ChatScreenState extends State<ChatScreen> {
       _streamingMessage = null;
       _pendingAttachments.clear();
       _attachmentsLocked = false;
+      // Step 40: in-memory-only smart-routing state belongs to the
+      // conversation being left, not the one being opened.
+      _activeDocument = null;
+      _activeDocumentQaTurns = const [];
+      _isSmartProcessing = false;
+      _smartProcessingIndex = null;
+      _smartErrorIndex = null;
+      _smartRetryAction = null;
     });
     _scrollToBottom(force: true);
   }
@@ -372,6 +421,13 @@ class _ChatScreenState extends State<ChatScreen> {
       _streamingMessage = null;
       _pendingAttachments.clear();
       _attachmentsLocked = false;
+      // Step 40: see the matching reset in `_switchConversation` above.
+      _activeDocument = null;
+      _activeDocumentQaTurns = const [];
+      _isSmartProcessing = false;
+      _smartProcessingIndex = null;
+      _smartErrorIndex = null;
+      _smartRetryAction = null;
     });
     _scrollToBottom(force: true);
   }
@@ -536,6 +592,14 @@ class _ChatScreenState extends State<ChatScreen> {
     final attachmentMetas = <ChatAttachment>[];
     final attachmentParts = <GeminiInlinePart>[];
     final attachmentExtractedTexts = <String>[];
+    // Step 40 (Part 2/11): captured only when exactly one attachment is
+    // being sent — reused below for local intent routing (OCR/
+    // Handwriting/Document Intelligence) instead of processing the file a
+    // second time. `ProcessedAttachment` already holds everything each
+    // capability needs (`.part` for images, `.extractedText` for PDFs).
+    ProcessedAttachment? singleProcessed;
+    AttachmentType? singleSource;
+    String? singleFileName;
 
     for (final pending in attachmentsToSend) {
       try {
@@ -544,6 +608,11 @@ class _ChatScreenState extends State<ChatScreen> {
           pending.source,
         );
         attachmentMetas.add(processed.metadata);
+        if (attachmentsToSend.length == 1) {
+          singleProcessed = processed;
+          singleSource = pending.source;
+          singleFileName = pending.result.name;
+        }
         if (processed.part != null) {
           if (processed.metadata.kind == ChatAttachmentKind.image) {
             // Step 23: shrink images further, off the UI isolate, before
@@ -576,6 +645,15 @@ class _ChatScreenState extends State<ChatScreen> {
             ? 'What can you tell me about these attachments?'
             : 'What can you tell me about this attachment?');
 
+    // Step 40 (Part 2): local, keyword-based intent routing — decided
+    // purely from the user's own typed text and the single attachment's
+    // kind, no extra Gemini call. Only considered when the person actually
+    // typed an instruction (an attachment sent alone with no text keeps
+    // using the existing default-prompt understanding flow, unchanged).
+    final smartIntent = (singleProcessed != null && text.isNotEmpty)
+        ? _detectSmartIntent(text: text, kind: singleProcessed.metadata.kind)
+        : _SmartIntent.none;
+
     // Every attachment has now finished processing — only now do we clear
     // the pending row, in the very same frame the sent bubble (carrying
     // those same attachments) appears, so nothing visibly pops in or out.
@@ -587,6 +665,17 @@ class _ChatScreenState extends State<ChatScreen> {
       ));
       _pendingAttachments.clear();
       _attachmentsLocked = false;
+      // Step 40 (Part 5): any new attachment starts a fresh document
+      // context — either this exact attachment becomes the new active
+      // document below (on a successful Document Intelligence run), or
+      // it's unrelated to whatever was analyzed before, either way the
+      // old one no longer applies to what comes next.
+      if (attachmentsToSend.isNotEmpty) {
+        _activeDocument = null;
+        _activeDocumentQaTurns = const [];
+      }
+      _smartErrorIndex = null;
+      _smartRetryAction = null;
     });
     _inputController.clear();
     _scrollToBottom(force: true);
@@ -606,6 +695,21 @@ class _ChatScreenState extends State<ChatScreen> {
     // non-streaming path below — merging several image batches into one
     // answer doesn't map onto a single token stream.
     if (attachmentsToSend.isEmpty) {
+      // Step 40 (Part 5): a plain-text follow-up that clearly references
+      // the most recently analyzed document is answered by that same
+      // grounded Q&A instead of the normal chat flow — no re-selecting
+      // Document AI, no re-processing the file. Ambiguous/unrelated text
+      // (the common case) falls straight through to the unchanged
+      // streaming flow below.
+      if (_activeDocument != null && _looksLikeDocumentFollowUp(outgoingText)) {
+        setState(() {
+          _isSending = false; // handed off to _runDocumentFollowUp
+          _sendingHasImages = false;
+          _sendStage = null;
+        });
+        await _runDocumentFollowUp(outgoingText);
+        return;
+      }
       setState(() {
         _isSending = false; // handed off to _streamAiReply, which sets it
         _sendingHasImages = false;
@@ -615,6 +719,28 @@ class _ChatScreenState extends State<ChatScreen> {
         insertIndex: _messages.length,
         prompt: outgoingText,
         history: history,
+      );
+      return;
+    }
+
+    // Step 40 (Part 2/3): a single attachment with a clearly-recognized
+    // instruction is routed to the matching existing capability and
+    // rendered as a chat-native assistant message — no separate result
+    // screen. Ambiguous phrasing (`_SmartIntent.none`, the common case for
+    // "what can you tell me about this" or open-ended questions) falls
+    // straight through to the existing image/document understanding flow
+    // below, completely unchanged.
+    if (smartIntent != _SmartIntent.none && singleProcessed != null) {
+      setState(() {
+        _isSending = false; // handed off to _runSmartCapability
+        _sendingHasImages = false;
+        _sendStage = null;
+      });
+      await _runSmartCapability(
+        intent: smartIntent,
+        processed: singleProcessed,
+        source: singleSource!,
+        fileName: singleFileName!,
       );
       return;
     }
@@ -687,6 +813,379 @@ class _ChatScreenState extends State<ChatScreen> {
       _scrollToBottom();
       unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
     }
+  }
+
+  /// Step 40 (Part 2) — local, keyword-based intent detection. Looks only
+  /// at the user's own typed [text] (English or Roman Urdu/Hindi phrasing,
+  /// matching the examples in the spec) and the single attachment's
+  /// [kind]; never makes a network call. Returns `_SmartIntent.none` for
+  /// anything ambiguous, generic files, or multi-attachment sends (handled
+  /// by the caller before this is even reached) — the safe, existing
+  /// normal-flow default.
+  _SmartIntent _detectSmartIntent({
+    required String text,
+    required ChatAttachmentKind kind,
+  }) {
+    if (kind != ChatAttachmentKind.image && kind != ChatAttachmentKind.pdf) {
+      return _SmartIntent.none;
+    }
+    final t = text.toLowerCase();
+    bool any(List<String> phrases) => phrases.any(t.contains);
+
+    const handwritingPhrases = [
+      'handwritten',
+      'handwriting',
+      'hand written',
+      'hand-written',
+      'likhawat',
+      'haath se likha',
+      'hath se likha',
+    ];
+    const ocrPhrases = [
+      'text nikal',
+      'nikal do',
+      'nikaal',
+      'extract text',
+      'extract the text',
+      'read the text',
+      'read text',
+      'scan text',
+      'ocr',
+      'kya likha hai',
+      'kya likha h',
+      "what's written",
+      'what does it say',
+      'transcribe',
+    ];
+    const documentIntelPhrases = [
+      'summarize',
+      'summarise',
+      'summary',
+      'important point',
+      'key point',
+      'key fact',
+      'important information',
+      'samjhao',
+      'samjha do',
+      'table',
+      'headings',
+      'document',
+      'payment date',
+      'total amount',
+      'analyze this',
+      'analyse this',
+      'analyze the document',
+      'analyse the document',
+    ];
+
+    final isHandwriting = any(handwritingPhrases);
+    final isOcr = !isHandwriting && any(ocrPhrases);
+    final isDocIntel = !isHandwriting && !isOcr && any(documentIntelPhrases);
+
+    // OCR/Handwriting only exist for a single picked image (Step 38's
+    // `TextRecognitionService` is image-only) — a matching phrase on a PDF
+    // still has a clear intent to read/understand the content, so it's
+    // routed to Document Intelligence instead of falling through to the
+    // generic flow.
+    if (isHandwriting) {
+      return kind == ChatAttachmentKind.image
+          ? _SmartIntent.handwriting
+          : _SmartIntent.documentIntel;
+    }
+    if (isOcr) {
+      return kind == ChatAttachmentKind.image
+          ? _SmartIntent.ocr
+          : _SmartIntent.documentIntel;
+    }
+    if (isDocIntel) return _SmartIntent.documentIntel;
+    return _SmartIntent.none;
+  }
+
+  /// Step 40 (Part 5) — local heuristic for whether a plain-text message
+  /// (no attachment) is a follow-up about [_activeDocument]. Requires an
+  /// explicit reference (document/table/page/amount/date/etc., matching
+  /// the spec's own follow-up examples) rather than routing every message
+  /// there once a document has ever been analyzed — that would silently
+  /// break ordinary chat for the rest of the conversation (Part 12).
+  bool _looksLikeDocumentFollowUp(String text) {
+    final t = text.toLowerCase();
+    const followUpPhrases = [
+      'document',
+      'pdf',
+      'table',
+      'page',
+      'summary',
+      'summarize',
+      'summarise',
+      'amount',
+      'total',
+      'date',
+      'important point',
+      'key point',
+      'key fact',
+      'iska',
+      'isme',
+      'ismein',
+      'usme',
+      'usmein',
+    ];
+    return followUpPhrases.any(t.contains);
+  }
+
+  String _labelFor(_SmartIntent intent) {
+    switch (intent) {
+      case _SmartIntent.ocr:
+        return 'Extracting text…';
+      case _SmartIntent.handwriting:
+        return 'Reading the handwriting…';
+      case _SmartIntent.documentIntel:
+        return 'Analyzing the document…';
+      case _SmartIntent.none:
+        return 'Reading your document…';
+    }
+  }
+
+  /// Step 40 (Part 3/4/6/7/8) — runs the local-routed capability chosen by
+  /// [intent] on an already-processed [processed] attachment (no
+  /// re-reading/re-compressing/re-extracting — see `ProcessedAttachment`
+  /// captured in `_sendMessage`), showing an immediate in-chat loading
+  /// state and replacing it with the real chat-native result in place.
+  ///
+  /// [retryIndex], when set (Part 10 — Retry), reruns the exact same
+  /// capability against the same already-processed data, replacing that
+  /// same message in place instead of appending a new one.
+  Future<void> _runSmartCapability({
+    required _SmartIntent intent,
+    required ProcessedAttachment processed,
+    required AttachmentType source,
+    required String fileName,
+    int? retryIndex,
+  }) async {
+    final reuseSlot = retryIndex != null && retryIndex < _messages.length;
+    final insertIndex = reuseSlot ? retryIndex : _messages.length;
+
+    setState(() {
+      final placeholder = ChatMessage(text: '', isUser: false);
+      if (reuseSlot) {
+        _messages[insertIndex] = placeholder;
+      } else {
+        _messages.add(placeholder);
+      }
+      _isSending = true;
+      _isSmartProcessing = true;
+      _smartProcessingIndex = insertIndex;
+      _smartProcessingLabel = _labelFor(intent);
+      _smartErrorIndex = null;
+      _smartRetryAction = null;
+    });
+    _scrollToBottom(force: true);
+
+    VoidCallback retryAction = () => unawaited(_runSmartCapability(
+          intent: intent,
+          processed: processed,
+          source: source,
+          fileName: fileName,
+          retryIndex: insertIndex,
+        ));
+
+    try {
+      ChatMessage result;
+      switch (intent) {
+        case _SmartIntent.ocr:
+        case _SmartIntent.handwriting:
+          final part = processed.part;
+          if (part == null) {
+            throw TextRecognitionException(
+              'Could not process this image. Please try a different one.',
+            );
+          }
+          final mode = intent == _SmartIntent.ocr
+              ? TextScanMode.ocr
+              : TextScanMode.handwriting;
+          final scan = await TextRecognitionService.recognizeFromPart(
+            part: part,
+            mode: mode,
+          );
+          result = _buildScanResultMessage(scan);
+          break;
+        case _SmartIntent.documentIntel:
+          // Step 40 (Part 8/11): builds the `PreparedDocument` directly
+          // from the already-processed attachment instead of calling
+          // `DocumentIntelligenceService.prepare()`, which would call
+          // `AttachmentProcessorService.process()` a second time on the
+          // same file.
+          final doc = PreparedDocument(
+            name: fileName,
+            kind: processed.metadata.kind,
+            imagePart: processed.metadata.kind == ChatAttachmentKind.image
+                ? processed.part
+                : null,
+            extractedText: processed.extractedText,
+          );
+          final analysis = await DocumentIntelligenceService.analyze(doc);
+          _activeDocument = doc;
+          _activeDocumentQaTurns = const [];
+          result = ChatMessage(
+            text: analysis.summary,
+            isUser: false,
+            documentResult: analysis.toJson(),
+          );
+          break;
+        case _SmartIntent.none:
+          return; // Unreachable — caller only invokes this for a match.
+      }
+
+      if (!mounted) return;
+      setState(() {
+        if (insertIndex < _messages.length) {
+          _messages[insertIndex] = result;
+        } else {
+          _messages.add(result);
+        }
+        _streamingMessage = result;
+        if (!_followBottom) _newContentWhilePaused = true;
+      });
+    } on TextRecognitionException catch (e) {
+      _replaceWithSmartError(insertIndex, e.message, retryAction);
+    } on DocumentIntelligenceException catch (e) {
+      _replaceWithSmartError(insertIndex, e.message, retryAction);
+    } catch (_) {
+      _replaceWithSmartError(
+        insertIndex,
+        'Something went wrong. Please try again.',
+        retryAction,
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSending = false;
+          _isSmartProcessing = false;
+          _smartProcessingIndex = null;
+        });
+      }
+      _scrollToBottom();
+      unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
+    }
+  }
+
+  /// Step 40 (Part 5/8/10) — answers [question] about `_activeDocument`,
+  /// reusing that cached `PreparedDocument` (no re-processing). Same
+  /// in-place loading/error/retry pattern as `_runSmartCapability`, kept
+  /// separate since it has no `ProcessedAttachment`/intent to route and
+  /// must never clear `_activeDocument` on failure (Part 10 — Q&A failure
+  /// keeps the document context intact).
+  Future<void> _runDocumentFollowUp(String question, {int? retryIndex}) async {
+    final doc = _activeDocument;
+    if (doc == null) return;
+
+    final reuseSlot = retryIndex != null && retryIndex < _messages.length;
+    final insertIndex = reuseSlot ? retryIndex : _messages.length;
+
+    setState(() {
+      final placeholder = ChatMessage(text: '', isUser: false);
+      if (reuseSlot) {
+        _messages[insertIndex] = placeholder;
+      } else {
+        _messages.add(placeholder);
+      }
+      _isSending = true;
+      _isSmartProcessing = true;
+      _smartProcessingIndex = insertIndex;
+      _smartProcessingLabel = 'Checking the document…';
+      _smartErrorIndex = null;
+      _smartRetryAction = null;
+    });
+    _scrollToBottom(force: true);
+
+    try {
+      final turn = await DocumentIntelligenceService.askQuestion(
+        doc,
+        question,
+        priorTurns: _activeDocumentQaTurns,
+      );
+      if (!mounted) return;
+      final result = ChatMessage(text: turn.answer, isUser: false);
+      setState(() {
+        _activeDocumentQaTurns = [..._activeDocumentQaTurns, turn];
+        if (insertIndex < _messages.length) {
+          _messages[insertIndex] = result;
+        } else {
+          _messages.add(result);
+        }
+        _streamingMessage = result;
+        if (!_followBottom) _newContentWhilePaused = true;
+      });
+    } on DocumentIntelligenceException catch (e) {
+      _replaceWithSmartError(
+        insertIndex,
+        e.message,
+        () => unawaited(
+          _runDocumentFollowUp(question, retryIndex: insertIndex),
+        ),
+      );
+    } catch (_) {
+      _replaceWithSmartError(
+        insertIndex,
+        'Could not get an answer. Please try again.',
+        () => unawaited(
+          _runDocumentFollowUp(question, retryIndex: insertIndex),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSending = false;
+          _isSmartProcessing = false;
+          _smartProcessingIndex = null;
+        });
+      }
+      _scrollToBottom();
+      unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
+    }
+  }
+
+  /// Step 40 (Part 10) — replaces the message at [index] with a normal
+  /// error bubble (same styling/behavior every other error bubble already
+  /// has) and wires [retry] up as its Retry action via `_smartErrorIndex`/
+  /// `_smartRetryAction` (see the `onRetry` wiring at the ChatBubble call
+  /// site below) instead of the generic `_retryLastMessage`, which
+  /// wouldn't know how to re-run a smart capability.
+  void _replaceWithSmartError(int index, String message, VoidCallback retry) {
+    if (!mounted) return;
+    setState(() {
+      final errorMessage = ChatMessage(text: message, isUser: false, isError: true);
+      if (index < _messages.length) {
+        _messages[index] = errorMessage;
+      } else {
+        _messages.add(errorMessage);
+      }
+      _smartErrorIndex = index;
+      _smartRetryAction = retry;
+    });
+  }
+
+  /// Step 40 (Part 3/7) — turns a [TextRecognitionResult] into a plain
+  /// chat-native assistant message. OCR results are just the recognized
+  /// text (rendered as a normal Markdown reply, unchanged bubble styling).
+  /// Handwriting results keep Step 38's existing confidence behavior — for
+  /// medium/low confidence, the exact same warning text
+  /// `TextScanResultScreen` already shows is prepended as a Markdown
+  /// blockquote, which the bubble already renders as a distinct tinted
+  /// callout (no new UI needed).
+  ChatMessage _buildScanResultMessage(TextRecognitionResult scan) {
+    if (scan.mode == TextScanMode.ocr) {
+      return ChatMessage(text: scan.text, isUser: false);
+    }
+    String? warning;
+    if (scan.confidence == ScanConfidence.low) {
+      warning = 'This handwriting was hard to read — the result may '
+          'contain mistakes. Please double-check it.';
+    } else if (scan.confidence == ScanConfidence.medium) {
+      warning = 'Some words in this handwriting were unclear — please '
+          'double-check the result.';
+    }
+    final text = warning != null ? '> ⚠️ $warning\n\n${scan.text}' : scan.text;
+    return ChatMessage(text: text, isUser: false);
   }
 
   /// Streams a fresh AI reply into `_messages` at [insertIndex] (appending
@@ -1031,7 +1530,15 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _clearChat() async {
-    setState(() => _messages.clear());
+    setState(() {
+      _messages.clear();
+      // Step 40: no messages left to reference the document — see the
+      // matching reset in `_switchConversation`.
+      _activeDocument = null;
+      _activeDocumentQaTurns = const [];
+      _smartErrorIndex = null;
+      _smartRetryAction = null;
+    });
     await context.read<ConversationProvider>().clearCurrentMessages();
   }
 
@@ -1062,6 +1569,14 @@ class _ChatScreenState extends State<ChatScreen> {
     // most, fill the composer at the end. Handled separately, before the
     // pending-attachment logic below, which stays untouched for the
     // original four types.
+    //
+    // Step 40 — Chat-Native Intelligence UX Refactor (Part 1/9): these two
+    // `AttachmentType` values are no longer returned by
+    // `showAttachmentSheet` (its option buttons were removed), so this
+    // branch is unreachable via the UI now. Left in place, unmodified, per
+    // the instruction not to delete underlying capability code — the
+    // standalone flow itself (`_startTextScan`, `TextScanResultScreen`)
+    // still works correctly if ever reached again.
     if (type == AttachmentType.ocr || type == AttachmentType.handwriting) {
       await _startTextScan(type);
       return;
@@ -1073,6 +1588,9 @@ class _ChatScreenState extends State<ChatScreen> {
     // the composer (via "Use in Chat") at the end. Handled here, before the
     // pending-attachment logic below, which stays untouched for the
     // original four types.
+    //
+    // Step 40: same note as above — unreachable via the sheet's UI now,
+    // left intact.
     if (type == AttachmentType.documentIntel) {
       await _startDocumentIntelligence();
       return;
@@ -1550,8 +2068,18 @@ class _ChatScreenState extends State<ChatScreen> {
                               // row is only appended for sends that don't
                               // stream (image/attachment sends still use
                               // it, unchanged).
+                              //
+                              // Step 40 (Part 6): a smart-routed capability
+                              // run (`_isSmartProcessing`) also already has
+                              // its own placeholder bubble in `_messages`
+                              // (with its own in-bubble loading dot, see
+                              // `isSmartLoading` below) — excluded here for
+                              // the same reason, so the two loading
+                              // indicators never show at once.
                               itemCount: _messages.length +
-                                  (_isSending && !_isStreaming ? 1 : 0),
+                                  (_isSending && !_isStreaming && !_isSmartProcessing
+                                      ? 1
+                                      : 0),
                               itemBuilder: (context, index) {
                                 if (index == _messages.length) {
                                   // Step 23 / Step 31: a single premium
@@ -1574,6 +2102,30 @@ class _ChatScreenState extends State<ChatScreen> {
                                 final isLast = index == _messages.length - 1;
                                 final isLive = _isStreaming &&
                                     _liveStreamIndex == index;
+                                // Step 40 (Part 6): this exact message is
+                                // the one currently being filled in by a
+                                // smart-routed capability — reuses the same
+                                // in-bubble loading dot as live streaming
+                                // (see `ChatBubble.liveLabel`), just with a
+                                // status specific to what's running.
+                                final isSmartLoading = _isSmartProcessing &&
+                                    _smartProcessingIndex == index;
+                                // Step 40 (Part 10): resolved once, with an
+                                // explicit type, rather than inline in the
+                                // ChatBubble constructor below — avoids any
+                                // ambiguity inferring a shared type between
+                                // `_smartRetryAction` (`VoidCallback?`) and
+                                // `() => _retryLastMessage(index)` (whose
+                                // body returns a `Future<void>`, allowed in
+                                // a `VoidCallback` slot but easiest to keep
+                                // unambiguous as its own statement).
+                                final VoidCallback? onRetryAction =
+                                    !(message.isError && isLast && !_isSending)
+                                        ? null
+                                        : (_smartErrorIndex == index &&
+                                                _smartRetryAction != null)
+                                            ? _smartRetryAction
+                                            : () => _retryLastMessage(index);
                                 // Step 12.4: user messages slide in from the
                                 // right while fading in; AI (and error)
                                 // messages just fade in — no slide, no
@@ -1626,15 +2178,23 @@ class _ChatScreenState extends State<ChatScreen> {
                                           onDelete: isAiReply
                                               ? () => _deleteMessage(index)
                                               : null,
-                                          onRetry: message.isError &&
-                                                  isLast &&
-                                                  !_isSending
-                                              ? () => _retryLastMessage(index)
-                                              : null,
+                                          // Step 40 (Part 10): a smart
+                                          // capability's own error bubble
+                                          // reruns that same capability
+                                          // (`_smartRetryAction`) instead of
+                                          // the generic `_retryLastMessage`,
+                                          // which only knows how to re-ask
+                                          // Gemini a plain text prompt with
+                                          // no attachment. See
+                                          // `onRetryAction` above.
+                                          onRetry: onRetryAction,
                                           isSpeaking: _speakingIndex == index,
                                           animate: identical(
                                               message, _streamingMessage),
-                                          isLive: isLive,
+                                          isLive: isLive || isSmartLoading,
+                                          liveLabel: isSmartLoading
+                                              ? _smartProcessingLabel
+                                              : 'Writing...',
                                           onStreamTick: _scrollToBottom,
                                         ),
                                       );
