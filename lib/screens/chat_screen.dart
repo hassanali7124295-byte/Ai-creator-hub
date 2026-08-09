@@ -2290,11 +2290,11 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// Sends the recorded voice message as a normal chat bubble — preview →
-  /// sending → idle. Per Part 8, the recorded audio is kept exactly as
-  /// the user's voice message rather than silently transcribed back to
-  /// text: the existing Gemini chat pipeline is text-only, so this simply
-  /// appends the message to the conversation (same as every other message
-  /// kind) without inventing a new Gemini request shape for audio.
+  /// sending → idle — then (Step 46) hands the same recorded audio file to
+  /// Gemini so the AI actually replies to what was said. The audio bubble
+  /// itself is never touched by this: it's appended first, exactly as
+  /// before, and stays a real playable voice message either way. Only the
+  /// AI-reply request (below, via [_requestVoiceAiReply]) is new.
   Future<void> _sendVoiceMessage() async {
     final path = _recordedPath;
     if (_recordState != _VoiceRecordState.preview || path == null) return;
@@ -2333,9 +2333,159 @@ class _ChatScreenState extends State<ChatScreen> {
       // as any other new attachment sent via `_sendMessage`.
       _activeDocument = null;
       _activeDocumentQaTurns = const [];
+      _smartErrorIndex = null;
+      _smartRetryAction = null;
     });
     _scrollToBottom(force: true);
     unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
+
+    await _requestVoiceAiReply(path);
+  }
+
+  /// Step 46 — sends the just-recorded audio file at [audioPath] to Gemini
+  /// as an inline attachment (the same `GeminiInlinePart`/`sendMessage`
+  /// mechanism `AttachmentProcessorService` already uses for images and
+  /// generic files — `audio/m4a` is one of Gemini's documented supported
+  /// audio mime types) and appends the resulting reply as a normal AI chat
+  /// bubble.
+  ///
+  /// Deliberately does NOT go through `AttachmentProcessorService`: audio
+  /// is not one of its handled kinds (Step 45 made that explicit — see the
+  /// `ChatAttachmentKind.audio` case in `AttachmentProcessorService
+  /// .process()`, which throws rather than routing audio through
+  /// image/PDF/generic-file handling), and this method never calls it.
+  /// The already-sent audio `ChatMessage`/`ChatAttachment` from
+  /// [_sendVoiceMessage] is never modified here — only a new AI-reply
+  /// message is appended (or, on retry, an old error bubble replaced by a
+  /// fresh attempt).
+  ///
+  /// Uses the same `_isSending` flag as every other send path, so — with
+  /// no extra plumbing needed — `_switchConversation`/`_startNewChat`
+  /// (which both already bail out early while `_isSending` is true) can't
+  /// let the eventual reply land in the wrong conversation.
+  ///
+  /// On failure, the voice message stays exactly as sent; a friendly error
+  /// bubble is appended (see [_appendVoiceReplyError]) with Retry wired to
+  /// remove that bubble and re-run this same method against the same
+  /// [audioPath] (via [_retryVoiceAiReply] and the existing
+  /// `_smartErrorIndex`/`_smartRetryAction` mechanism `_runSmartCapability`
+  /// already uses) — never the generic `_retryLastMessage`, which only
+  /// knows how to re-ask a plain text prompt and has no audio file to
+  /// attach.
+  Future<void> _requestVoiceAiReply(String audioPath) async {
+    if (_isSending) return;
+
+    setState(() {
+      _isSending = true;
+      _sendingHasImages = false;
+      _sendStage = null;
+      _sendBatchCurrent = 0;
+      _sendBatchTotal = 0;
+    });
+
+    try {
+      final file = File(audioPath);
+      if (!await file.exists()) {
+        throw AttachmentException(
+          'That voice message could no longer be found on this device.',
+        );
+      }
+      final bytes = await file.readAsBytes();
+      if (bytes.isEmpty) {
+        throw AttachmentException('That voice message is empty.');
+      }
+
+      final audioPart = GeminiInlinePart(
+        mimeType: 'audio/m4a',
+        base64Data: base64Encode(bytes),
+      );
+
+      // Same history shape `_sendMessage` builds: every prior turn as
+      // plain text, with the turn just sent (the voice message itself,
+      // whose bubble text is deliberately empty) dropped — it's sent as
+      // the request's audio attachment instead, not as a text prompt.
+      final history = _messages
+          .where((m) => !m.isError)
+          .map((m) => {'role': m.isUser ? 'user' : 'model', 'text': m.text})
+          .toList();
+      if (history.isNotEmpty) history.removeLast();
+
+      final reply = await GeminiService.sendMessage(
+        'The user just sent a voice message instead of typing. Listen to '
+        'the attached audio and reply naturally and helpfully to what '
+        'they said, exactly as you would for a typed message.',
+        history: history,
+        attachments: [audioPart],
+        modeInstruction: _mode.systemPrompt,
+      );
+
+      if (!mounted) return;
+      final aiMessage = ChatMessage(text: reply, isUser: false);
+      setState(() {
+        _messages.add(aiMessage);
+        _streamingMessage = aiMessage;
+        if (!_followBottom) _newContentWhilePaused = true;
+        _smartErrorIndex = null;
+        _smartRetryAction = null;
+      });
+    } on GeminiException catch (e) {
+      _appendVoiceReplyError(e.message, audioPath);
+    } on AttachmentException catch (e) {
+      _appendVoiceReplyError(e.message, audioPath);
+    } catch (_) {
+      _appendVoiceReplyError(
+        'Could not get a reply to that voice message. Please try again.',
+        audioPath,
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSending = false;
+          _sendingHasImages = false;
+          _sendStage = null;
+          _sendBatchCurrent = 0;
+          _sendBatchTotal = 0;
+        });
+      }
+      _scrollToBottom();
+      unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
+    }
+  }
+
+  /// Appends a friendly error bubble after a failed voice-message AI
+  /// request and wires its Retry action to [_retryVoiceAiReply] — the same
+  /// `_smartErrorIndex`/`_smartRetryAction` pattern `_replaceWithSmartError`
+  /// uses, except nothing is replaced in place here (there is no loading
+  /// placeholder bubble for this flow; the bottom `_LiveStatus` row is the
+  /// loading state instead — see `_requestVoiceAiReply`), so the error is
+  /// simply appended. The voice message that was already sent is never
+  /// touched.
+  void _appendVoiceReplyError(String message, String audioPath) {
+    if (!mounted) return;
+    setState(() {
+      final errorMessage = ChatMessage(text: message, isUser: false, isError: true);
+      _messages.add(errorMessage);
+      final errorIndex = _messages.length - 1;
+      _smartErrorIndex = errorIndex;
+      _smartRetryAction = () =>
+          unawaited(_retryVoiceAiReply(errorIndex, audioPath));
+    });
+  }
+
+  /// Retry action for a failed voice-message AI reply (wired by
+  /// [_appendVoiceReplyError]): removes the stale error bubble at
+  /// [errorIndex] — same as [_retryLastMessage] does for a plain-text
+  /// retry — then re-runs [_requestVoiceAiReply] against the same
+  /// [audioPath]. Never reopens the recording UI and never touches the
+  /// already-sent voice message itself.
+  Future<void> _retryVoiceAiReply(int errorIndex, String audioPath) async {
+    if (_isSending) return;
+    if (errorIndex < 0 || errorIndex >= _messages.length) {
+      await _requestVoiceAiReply(audioPath);
+      return;
+    }
+    setState(() => _messages.removeAt(errorIndex));
+    await _requestVoiceAiReply(audioPath);
   }
 
   /// A friendly, floating SnackBar for voice-message problems (permission
