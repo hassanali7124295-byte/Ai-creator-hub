@@ -197,6 +197,41 @@ class DocumentQaTurn {
   });
 }
 
+/// Step 42 — Natural-Language File Actions: which grounded, document-
+/// content-based action to run, beyond the full structured analysis
+/// [DocumentIntelligenceService.analyze] already provides. Each of these
+/// renders as a plain assistant chat message (Markdown text, same as
+/// Step 38's OCR/handwriting results) rather than the [DocumentResultCard]
+/// used for [DocumentIntelligenceService.analyze] — no new persisted
+/// fields, no new UI widget, fully backward compatible with existing
+/// saved chat history.
+enum DocumentActionType {
+  notes,
+  questions,
+  mcqs,
+  explanation,
+  tableExplanation,
+}
+
+/// Parameters for a [DocumentIntelligenceService.runAction] call.
+/// [language] (Step 42 — language handling) is only meaningful for
+/// [DocumentActionType.explanation] — e.g. "Urdu", "Roman Urdu", "Hindi" —
+/// and is `null` when the person didn't name one (the model then just
+/// follows the app's existing reply-in-the-user's-language behavior).
+/// [count] is only meaningful for [DocumentActionType.questions]/
+/// [DocumentActionType.mcqs].
+class DocumentActionRequest {
+  final DocumentActionType type;
+  final String? language;
+  final int? count;
+
+  const DocumentActionRequest({
+    required this.type,
+    this.language,
+    this.count,
+  });
+}
+
 /// Extracts structured understanding from a document/image and answers
 /// grounded follow-up questions about it.
 ///
@@ -300,6 +335,97 @@ class DocumentIntelligenceService {
       answer: answer,
       foundInDocument: found,
     );
+  }
+
+  /// Step 42 — Natural-Language File Actions: runs a grounded, document-
+  /// content-based action ([request]) on [doc] — notes, questions, MCQs,
+  /// a language-aware explanation, or a table explanation — and returns
+  /// plain Markdown text, same infrastructure as [analyze]/[askQuestion]
+  /// (just [_ask] with a dedicated prompt). Every prompt below explicitly
+  /// instructs the model to stay grounded in the attached document/text
+  /// and to say so plainly instead of inventing content when the document
+  /// doesn't have enough information for what was asked.
+  static Future<String> runAction(
+    PreparedDocument doc,
+    DocumentActionRequest request,
+  ) async {
+    final reply = await _ask(doc, _promptFor(request));
+    final trimmed = reply.trim();
+    if (trimmed.isEmpty) {
+      throw DocumentIntelligenceException(
+        'No readable content was found in this document.',
+      );
+    }
+    return trimmed;
+  }
+
+  static String _promptFor(DocumentActionRequest request) {
+    const groundingRule =
+        'Base your answer ONLY on the attached document (the image above, '
+        'or the extracted document text above) — never invent, assume, or '
+        'add outside information. If the document does not contain enough '
+        'information to do this properly, say so plainly instead of '
+        'making something up.';
+
+    switch (request.type) {
+      case DocumentActionType.notes:
+        return '''
+Write concise, well-structured study/reference notes from the attached document — short headings and bullet points, covering the important information someone would want to revise later.
+
+$groundingRule
+
+Reply with the notes only, formatted with Markdown headings/bullets — no preamble like "Here are your notes".''';
+
+      case DocumentActionType.questions:
+        final count = request.count ?? 5;
+        return '''
+Write $count exam-style questions based on the attached document — plain open-ended questions (not multiple choice), covering the document's important content.
+
+$groundingRule
+
+Reply with a numbered list of questions only — no answers, no preamble.''';
+
+      case DocumentActionType.mcqs:
+        final count = request.count ?? 5;
+        return '''
+Write $count multiple-choice questions (MCQs) based on the attached document.
+
+$groundingRule
+
+Format every question exactly like this, with a blank line between questions:
+1. Question text
+A) option
+B) option
+C) option
+D) option
+Answer: B
+
+Reply with the numbered MCQs only — no preamble or closing remarks.''';
+
+      case DocumentActionType.explanation:
+        final language = request.language;
+        final languageLine = language != null
+            ? 'Write your entire explanation in $language.'
+            : 'Reply in the same language the user just wrote in, as usual.';
+        return '''
+Explain the attached document's content in clear, simple terms, as if explaining it to someone who wants to understand it quickly.
+
+$groundingRule
+
+$languageLine
+
+Reply with the explanation only — no preamble.''';
+
+      case DocumentActionType.tableExplanation:
+        return '''
+Look at the table(s) in the attached document and explain what they show in plain language — what the columns/rows represent and the key takeaways, not just a re-listing of every cell.
+
+$groundingRule
+
+If there is no table in the document, say so plainly instead of describing something else.
+
+Reply with the explanation only — no preamble.''';
+    }
   }
 
   /// Sends [prompt] to Gemini alongside whichever of [doc]'s image part or

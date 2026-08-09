@@ -45,7 +45,27 @@ enum _MicState { idle, listening, processing }
 /// ambiguous (or no attachment/text combination applies) and the existing,
 /// unchanged normal image/document understanding flow should be used
 /// instead — never a second Gemini call just to decide.
-enum _SmartIntent { none, ocr, handwriting, documentIntel }
+///
+/// Step 42 — Natural-Language File Actions: extends the same local,
+/// zero-Gemini-call routing with five more document actions
+/// (`documentNotes`/`documentQuestions`/`documentMcqs`/
+/// `documentExplanation`/`documentTableExplain`), each mapping straight to
+/// [DocumentActionType] and rendered as a plain chat message — no new
+/// screen, no new persisted fields. `documentIntel` (Step 40's full
+/// structured analysis + [DocumentResultCard]) is unchanged and still the
+/// fallback for phrasing that doesn't match one of the newer, more
+/// specific actions.
+enum _SmartIntent {
+  none,
+  ocr,
+  handwriting,
+  documentIntel,
+  documentNotes,
+  documentQuestions,
+  documentMcqs,
+  documentExplanation,
+  documentTableExplain,
+}
 
 // Step 23/24: per-request attachment limits. Images beyond
 // `_kMaxImagesPerRequest` are rejected at pick time; anything at or under
@@ -401,6 +421,16 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_speakingIndex != null) {
       await VoiceManager.instance.stop();
     }
+    // Step 42 — Conversation Safety: a still-listening voice session keeps
+    // streaming recognized words into `_inputController` (see
+    // `_onVoiceTap`) even while `_isSending` is false, so switching
+    // conversations mid-listen (not otherwise blocked, unlike an in-flight
+    // send) could leave a stray transcription typed into the composer of
+    // the *new* conversation. Cancel it first, same pattern `_sendMessage`
+    // already uses.
+    if (_micState != _MicState.idle) {
+      await _voiceInput.cancel();
+    }
     _stopGenerating();
     await provider.selectConversation(id);
     if (!mounted) return;
@@ -412,6 +442,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _streamingMessage = null;
       _pendingAttachments.clear();
       _attachmentsLocked = false;
+      _micState = _MicState.idle;
       // Step 40: in-memory-only smart-routing state belongs to the
       // conversation being left, not the one being opened.
       _activeDocument = null;
@@ -434,6 +465,11 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_speakingIndex != null) {
       await VoiceManager.instance.stop();
     }
+    // Step 42 — Conversation Safety: see the matching cancel in
+    // `_switchConversation` above.
+    if (_micState != _MicState.idle) {
+      await _voiceInput.cancel();
+    }
     _stopGenerating();
     final id = await provider.startNewConversation();
     if (!mounted) return;
@@ -445,6 +481,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _streamingMessage = null;
       _pendingAttachments.clear();
       _attachmentsLocked = false;
+      _micState = _MicState.idle;
       // Step 40: see the matching reset in `_switchConversation` above.
       _activeDocument = null;
       _activeDocumentQaTurns = const [];
@@ -765,6 +802,7 @@ class _ChatScreenState extends State<ChatScreen> {
         processed: singleProcessed,
         source: singleSource!,
         fileName: singleFileName!,
+        instructionText: outgoingText,
       );
       return;
     }
@@ -846,6 +884,14 @@ class _ChatScreenState extends State<ChatScreen> {
   /// anything ambiguous, generic files, or multi-attachment sends (handled
   /// by the caller before this is even reached) — the safe, existing
   /// normal-flow default.
+  ///
+  /// Step 42 (Feature 2) extends this with five more phrase groups —
+  /// MCQs, plain questions, notes, a table explanation, and a language-
+  /// aware explanation — checked in priority order *before* the existing,
+  /// unchanged `documentIntelPhrases` catch-all, so a more specific
+  /// instruction (e.g. "10 MCQs") routes to the new dedicated action
+  /// instead of falling into the general structured-analysis card. Still
+  /// entirely local — no extra Gemini call is made just to classify.
   _SmartIntent _detectSmartIntent({
     required String text,
     required ChatAttachmentKind kind,
@@ -881,6 +927,68 @@ class _ChatScreenState extends State<ChatScreen> {
       'what does it say',
       'transcribe',
     ];
+    // Step 42: checked before `questionPhrases` — "MCQs" always means
+    // multiple-choice, never plain questions.
+    const mcqPhrases = [
+      'mcq',
+      'mcqs',
+      'multiple choice',
+      'multiple-choice',
+      'objective question',
+      'objective questions',
+    ];
+    const questionPhrases = [
+      'exam questions',
+      'practice questions',
+      'generate questions',
+      'question generate',
+      'questions bana',
+      'question bana',
+      'quiz bana',
+      'banao questions',
+    ];
+    const notesPhrases = [
+      'short notes',
+      'exam notes',
+      'study notes',
+      'notes bana',
+      'notes banao',
+      'make notes',
+      'create notes',
+      'notes mein convert',
+      'convert into notes',
+    ];
+    // A table-explanation request needs a table word *and* an explain
+    // verb together — bare "table" alone still falls through to the
+    // existing `documentIntelPhrases` catch-all below (unchanged Step 40
+    // behavior: full structured analysis, which already reconstructs
+    // every table it finds).
+    const tableWords = ['table'];
+    const explainVerbs = [
+      'explain',
+      'samjhao',
+      'samjha do',
+      'batao',
+      'bata do',
+    ];
+    // A language-aware explanation needs a named language *and* an
+    // explain/translate verb together — "samjhao"/"explain" alone (no
+    // language named) still falls through to `documentIntelPhrases`
+    // below, same as before Step 42.
+    const languageWords = [
+      'roman urdu',
+      'roman hindi',
+      'urdu',
+      'hindi',
+      'english',
+    ];
+    const translateVerbs = [
+      'samjhao',
+      'samjha do',
+      'explain',
+      'translate',
+      'tarjuma',
+    ];
     const documentIntelPhrases = [
       'summarize',
       'summarise',
@@ -904,7 +1012,37 @@ class _ChatScreenState extends State<ChatScreen> {
 
     final isHandwriting = any(handwritingPhrases);
     final isOcr = !isHandwriting && any(ocrPhrases);
-    final isDocIntel = !isHandwriting && !isOcr && any(documentIntelPhrases);
+    final isMcq = !isHandwriting && !isOcr && any(mcqPhrases);
+    final isQuestions =
+        !isHandwriting && !isOcr && !isMcq && any(questionPhrases);
+    final isNotes = !isHandwriting &&
+        !isOcr &&
+        !isMcq &&
+        !isQuestions &&
+        any(notesPhrases);
+    final isTableExplain = !isHandwriting &&
+        !isOcr &&
+        !isMcq &&
+        !isQuestions &&
+        !isNotes &&
+        any(tableWords) &&
+        any(explainVerbs);
+    final isExplanation = !isHandwriting &&
+        !isOcr &&
+        !isMcq &&
+        !isQuestions &&
+        !isNotes &&
+        !isTableExplain &&
+        any(languageWords) &&
+        any(translateVerbs);
+    final isDocIntel = !isHandwriting &&
+        !isOcr &&
+        !isMcq &&
+        !isQuestions &&
+        !isNotes &&
+        !isTableExplain &&
+        !isExplanation &&
+        any(documentIntelPhrases);
 
     // OCR/Handwriting only exist for a single picked image (Step 38's
     // `TextRecognitionService` is image-only) — a matching phrase on a PDF
@@ -921,8 +1059,87 @@ class _ChatScreenState extends State<ChatScreen> {
           ? _SmartIntent.ocr
           : _SmartIntent.documentIntel;
     }
+    // Step 42: the remaining new actions are all backed by
+    // `DocumentIntelligenceService` (image or extracted-PDF-text, same as
+    // `documentIntel`) — no image-only restriction needed.
+    if (isMcq) return _SmartIntent.documentMcqs;
+    if (isQuestions) return _SmartIntent.documentQuestions;
+    if (isNotes) return _SmartIntent.documentNotes;
+    if (isTableExplain) return _SmartIntent.documentTableExplain;
+    if (isExplanation) return _SmartIntent.documentExplanation;
     if (isDocIntel) return _SmartIntent.documentIntel;
     return _SmartIntent.none;
+  }
+
+  /// Step 42 — pulls a requested question/MCQ count out of phrasing like
+  /// "10 MCQs" or "5 questions" (English digits only — a reasonable,
+  /// deterministic subset of what a purely local, non-Gemini parser can
+  /// reliably support). Returns `null` if none was specified, letting
+  /// [DocumentIntelligenceService._promptFor] fall back to its own
+  /// default count.
+  int? _extractRequestedCount(String text) {
+    final match = RegExp(r'(\d{1,3})\s*(mcqs?|questions?|qs\b)',
+            caseSensitive: false)
+        .firstMatch(text);
+    final n = match != null ? int.tryParse(match.group(1)!) : null;
+    if (n == null || n <= 0) return null;
+    return n > 50 ? 50 : n; // sanity ceiling — never a runaway generation
+  }
+
+  /// Step 42 — pulls a requested explanation language out of phrasing
+  /// like "Urdu mein samjhao" or "explain in Roman Hindi". Returns `null`
+  /// if none was named, letting the explanation prompt fall back to the
+  /// app's existing reply-in-the-user's-own-language behavior.
+  String? _extractRequestedLanguage(String text) {
+    final t = text.toLowerCase();
+    if (t.contains('roman urdu')) {
+      return 'Roman Urdu (Urdu written in English letters)';
+    }
+    if (t.contains('roman hindi')) {
+      return 'Roman Hindi (Hindi written in English letters)';
+    }
+    if (t.contains('urdu')) return 'Urdu';
+    if (t.contains('hindi')) return 'Hindi';
+    if (t.contains('english')) return 'English';
+    return null;
+  }
+
+  /// Step 42 — builds the [DocumentActionRequest] for [intent] from the
+  /// user's own typed [instructionText]. Only called for the five new
+  /// `_SmartIntent` values this step adds; every other intent has no
+  /// matching [DocumentActionType] and isn't routed here.
+  DocumentActionRequest? _actionRequestFor(
+    _SmartIntent intent,
+    String instructionText,
+  ) {
+    switch (intent) {
+      case _SmartIntent.documentNotes:
+        return const DocumentActionRequest(type: DocumentActionType.notes);
+      case _SmartIntent.documentQuestions:
+        return DocumentActionRequest(
+          type: DocumentActionType.questions,
+          count: _extractRequestedCount(instructionText),
+        );
+      case _SmartIntent.documentMcqs:
+        return DocumentActionRequest(
+          type: DocumentActionType.mcqs,
+          count: _extractRequestedCount(instructionText),
+        );
+      case _SmartIntent.documentExplanation:
+        return DocumentActionRequest(
+          type: DocumentActionType.explanation,
+          language: _extractRequestedLanguage(instructionText),
+        );
+      case _SmartIntent.documentTableExplain:
+        return const DocumentActionRequest(
+          type: DocumentActionType.tableExplanation,
+        );
+      case _SmartIntent.none:
+      case _SmartIntent.ocr:
+      case _SmartIntent.handwriting:
+      case _SmartIntent.documentIntel:
+        return null;
+    }
   }
 
   /// Step 40 (Part 5) — local heuristic for whether a plain-text message
@@ -964,6 +1181,15 @@ class _ChatScreenState extends State<ChatScreen> {
         return 'Reading the handwriting…';
       case _SmartIntent.documentIntel:
         return 'Analyzing the document…';
+      case _SmartIntent.documentNotes:
+        return 'Preparing your notes…';
+      case _SmartIntent.documentQuestions:
+      case _SmartIntent.documentMcqs:
+        return 'Creating questions…';
+      case _SmartIntent.documentExplanation:
+        return 'Preparing your explanation…';
+      case _SmartIntent.documentTableExplain:
+        return 'Reading the table…';
       case _SmartIntent.none:
         return 'Reading your document…';
     }
@@ -983,6 +1209,13 @@ class _ChatScreenState extends State<ChatScreen> {
     required ProcessedAttachment processed,
     required AttachmentType source,
     required String fileName,
+    // Step 42: the user's own typed instruction for this attachment (or
+    // the default caption if they sent none) — only consulted for the
+    // five new document actions, to pull a requested count ("10 MCQs") or
+    // language ("Urdu mein samjhao") out of it via `_actionRequestFor`.
+    // Every existing intent (ocr/handwriting/documentIntel) ignores it
+    // completely, unchanged from Step 40/41.
+    required String instructionText,
     int? retryIndex,
   }) async {
     final reuseSlot = retryIndex != null && retryIndex < _messages.length;
@@ -1009,6 +1242,7 @@ class _ChatScreenState extends State<ChatScreen> {
           processed: processed,
           source: source,
           fileName: fileName,
+          instructionText: instructionText,
           retryIndex: insertIndex,
         ));
 
@@ -1065,6 +1299,40 @@ class _ChatScreenState extends State<ChatScreen> {
             isUser: false,
             documentResult: analysis.toJson(),
           );
+          break;
+        case _SmartIntent.documentNotes:
+        case _SmartIntent.documentQuestions:
+        case _SmartIntent.documentMcqs:
+        case _SmartIntent.documentExplanation:
+        case _SmartIntent.documentTableExplain:
+          // Step 42 (Feature 2) — same already-processed-attachment reuse
+          // as `documentIntel` above (no second
+          // `AttachmentProcessorService.process()` call), just routed to
+          // `DocumentIntelligenceService.runAction` with the action this
+          // phrasing matched. Rendered as a plain chat message (Markdown
+          // text, same as OCR/handwriting) rather than a
+          // `DocumentResultCard` — no new persisted fields, so existing
+          // chat history / `ChatMessage` serialization is untouched.
+          final doc = PreparedDocument(
+            name: fileName,
+            kind: processed.metadata.kind,
+            imagePart: processed.metadata.kind == ChatAttachmentKind.image
+                ? processed.part
+                : null,
+            extractedText: processed.extractedText,
+          );
+          final request = _actionRequestFor(intent, instructionText)!;
+          final actionText =
+              await DocumentIntelligenceService.runAction(doc, request)
+                  .timeout(
+            _kSmartOperationTimeout,
+            onTimeout: () => throw DocumentIntelligenceException(
+              'This is taking too long. Please try again.',
+            ),
+          );
+          _activeDocument = doc;
+          _activeDocumentQaTurns = const [];
+          result = ChatMessage(text: actionText, isUser: false);
           break;
         case _SmartIntent.none:
           return; // Unreachable — caller only invokes this for a match.
@@ -1570,6 +1838,13 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _clearChat() async {
+    // Step 42 — Conversation Safety: same voice-cancel as
+    // `_switchConversation`/`_startNewChat` — no reason to keep streaming
+    // recognized words into the composer once the conversation they'd
+    // belong to is gone.
+    if (_micState != _MicState.idle) {
+      await _voiceInput.cancel();
+    }
     setState(() {
       _messages.clear();
       // Step 40: no messages left to reference the document — see the
@@ -1578,6 +1853,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _activeDocumentQaTurns = const [];
       _smartErrorIndex = null;
       _smartRetryAction = null;
+      _micState = _MicState.idle;
     });
     await context.read<ConversationProvider>().clearCurrentMessages();
   }
