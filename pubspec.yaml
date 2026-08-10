@@ -7,6 +7,8 @@ environment:
   sdk: '>=3.0.0 <4.0.0'
 
 dependencies:
+  pdf: ^3.11.1
+  printing: ^5.13.4
   flutter:
     sdk: flutter
 
@@ -95,6 +97,7 @@ flutter:
   uses-material-design: true
 
   assets:
+    - assets/fonts/
     - assets/icon/
 
 # Step 17: premium "Pak AI" launcher icon — black + emerald glassmorphism

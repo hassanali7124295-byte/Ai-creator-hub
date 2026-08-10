@@ -20,6 +20,17 @@ class ChatMessage {
   /// normal text).
   final Map<String, dynamic>? documentResult;
 
+  /// Step 50 — Local PDF Generator: set only on the small "📄 PDF ready"
+  /// assistant message created after a successful natural-language PDF
+  /// export (see `PdfExportService`/`_handlePdfExportRequest` in
+  /// `chat_screen.dart`). Holds `{'path': <local file path>, 'fileName':
+  /// <display name>}` — enough for `PdfResultCard` to render Open/Share
+  /// actions. `null` for every other message, including plain text and
+  /// `documentResult` messages (the two are mutually exclusive in
+  /// practice: a message is either a Document Intelligence result or a
+  /// PDF-ready notice, never both).
+  final Map<String, dynamic>? pdfResult;
+
   ChatMessage({
     required this.text,
     required this.isUser,
@@ -27,6 +38,7 @@ class ChatMessage {
     this.isError = false,
     this.attachments = const [],
     this.documentResult,
+    this.pdfResult,
   }) : timestamp = timestamp ?? DateTime.now();
 
   Map<String, dynamic> toJson() => {
@@ -37,6 +49,7 @@ class ChatMessage {
         if (attachments.isNotEmpty)
           'attachments': attachments.map((a) => a.toJson()).toList(),
         if (documentResult != null) 'documentResult': documentResult,
+        if (pdfResult != null) 'pdfResult': pdfResult,
       };
 
   // `attachments` is a new field as of Step 9 — history saved by earlier
@@ -56,5 +69,8 @@ class ChatMessage {
                 .toList() ??
             const [],
         documentResult: json['documentResult'] as Map<String, dynamic>?,
+        // Absent in any history saved before Step 50 — defaults to `null`,
+        // same pattern as `documentResult` above.
+        pdfResult: json['pdfResult'] as Map<String, dynamic>?,
       );
 }

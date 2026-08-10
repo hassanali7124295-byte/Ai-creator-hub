@@ -16,6 +16,8 @@ import '../core/services/attachment_processor_service.dart';
 import '../core/services/attachment_service.dart';
 import '../core/services/document_intelligence_service.dart';
 import '../core/services/gemini_service.dart';
+import '../core/services/pdf_export_service.dart';
+import '../core/services/pdf_intent_service.dart';
 import '../core/services/text_recognition_service.dart';
 import '../core/services/tts_voice_service.dart';
 import '../core/services/voice_playback_service.dart';
@@ -665,6 +667,23 @@ class _ChatScreenState extends State<ChatScreen> {
     final attachmentsToSend = List<_PendingAttachment>.from(_pendingAttachments);
     if ((text.isEmpty && attachmentsToSend.isEmpty) || _isSending) return;
 
+    // Step 50 — Local PDF Generator: a plain-text natural-language PDF
+    // export request ("is answer ko PDF bana do", "make this a PDF", …)
+    // is detected locally (no Gemini call) and routed here instead of the
+    // normal send flow. Only considered when the composer has no
+    // attachment of its own — an export command always refers to
+    // something already in the conversation, never to a file being sent
+    // alongside it. Ambiguous/unrelated text (the common case for every
+    // normal chat message) returns `null` and falls straight through to
+    // the unchanged flow below.
+    if (attachmentsToSend.isEmpty && text.isNotEmpty) {
+      final pdfTarget = PdfIntentService.detect(text);
+      if (pdfTarget != null) {
+        await _handlePdfExportRequest(text: text, target: pdfTarget);
+        return;
+      }
+    }
+
     final hasImages = attachmentsToSend
         .any((a) => a.previewMeta.kind == ChatAttachmentKind.image);
 
@@ -900,6 +919,116 @@ class _ChatScreenState extends State<ChatScreen> {
           _sendStage = null;
           _sendBatchCurrent = 0;
           _sendBatchTotal = 0;
+        });
+      }
+      _scrollToBottom();
+      unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
+    }
+  }
+
+  /// Step 50 — Local PDF Generator: handles a natural-language PDF export
+  /// request end to end — adds the user's own command as a normal chat
+  /// bubble, resolves what to export from the *existing* conversation
+  /// (never Gemini, never the network — not even for the Urdu/Sindhi
+  /// font, which [PdfExportService] loads only from a bundled asset),
+  /// generates the
+  /// PDF entirely on-device, and shows the "📄 PDF ready" card with
+  /// Open/Share actions. Mirrors the existing error-handling copy from
+  /// the Step 50 brief exactly (Roman Urdu friendly messages), and never
+  /// throws past this method — a failure always ends in a plain in-chat
+  /// message, never a crash.
+  Future<void> _handlePdfExportRequest({
+    required String text,
+    required PdfExportTarget target,
+  }) async {
+    if (_isSending) return;
+    setState(() => _isSending = true);
+
+    setState(() {
+      _messages.add(ChatMessage(text: text, isUser: true));
+    });
+    _inputController.clear();
+    _scrollToBottom(force: true);
+    unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
+
+    // Resolve against everything *except* the command we just added —
+    // otherwise "is text ko PDF bana do" would find itself.
+    final priorMessages = _messages.sublist(0, _messages.length - 1);
+    final resolved = PdfContentResolver.resolve(
+      priorMessages: priorMessages,
+      target: target,
+    );
+
+    if (resolved == null || resolved.body.trim().isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _isSending = false;
+        _messages.add(ChatMessage(
+          text: 'Kaunsa text/Q&A PDF mein banana hai?',
+          isUser: false,
+        ));
+      });
+      _scrollToBottom();
+      unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
+      return;
+    }
+
+    // A lightweight in-chat placeholder while the PDF is generated —
+    // reuses the exact same in-bubble loading dot + index-tracking fields
+    // the existing smart-capability flow uses (`_isSmartProcessing`/
+    // `_smartProcessingIndex`/`_smartProcessingLabel`), so the composer,
+    // Regenerate button, etc. all treat this exactly like any other
+    // in-flight local capability — no new UI states to keep in sync.
+    final placeholder = ChatMessage(text: '', isUser: false);
+    final placeholderIndex = _messages.length;
+    setState(() {
+      _messages.add(placeholder);
+      _isSmartProcessing = true;
+      _smartProcessingIndex = placeholderIndex;
+      _smartProcessingLabel = 'Preparing your PDF…';
+    });
+    _scrollToBottom();
+
+    try {
+      final file = await PdfExportService.generate(
+        title: resolved.title,
+        question: resolved.question,
+        body: resolved.body,
+      );
+      if (!mounted) return;
+      setState(() {
+        final index = _messages.indexOf(placeholder);
+        if (index != -1) {
+          _messages[index] = ChatMessage(
+            text: '📄 PDF ready',
+            isUser: false,
+            pdfResult: {
+              'path': file.path,
+              'fileName': file.uri.pathSegments.isNotEmpty
+                  ? file.uri.pathSegments.last
+                  : 'PakAI.pdf',
+            },
+          );
+        }
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        final index = _messages.indexOf(placeholder);
+        if (index != -1) {
+          _messages[index] = ChatMessage(
+            text: 'PDF banane mein problem aa gayi. Dobara try karein.',
+            isUser: false,
+            isError: true,
+          );
+        }
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSending = false;
+          _isSmartProcessing = false;
+          _smartProcessingIndex = null;
         });
       }
       _scrollToBottom();
