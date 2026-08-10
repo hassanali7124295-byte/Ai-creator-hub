@@ -47,14 +47,26 @@ enum VoiceState { idle, loading, speaking, stopped, error }
 
 typedef VoiceStateListener = void Function(VoiceState state, Object? activeId);
 
+/// Step 49 — best-effort gender classification for a [TtsVoiceOption],
+/// exposed to the Settings picker so it can label a voice "Male"/
+/// "Female" only when there's real evidence for it. `unknown` is the
+/// honest answer whenever a voice's name gives no reliable signal —
+/// the picker must show a neutral "Voice" label in that case rather
+/// than invent a gender the device never reported (Step 49 requirement
+/// 14). This is never used to fabricate voices that don't exist: it
+/// only labels voices the engine already returned.
+enum TtsVoiceGender { male, female, unknown }
+
 /// Step 48 — a single voice exactly as reported by the device's TTS
 /// engine via `flutter_tts.getVoices` — never invented or assumed. Only
-/// [name] and [locale] are used: the two keys `flutter_tts` documents as
-/// present across every platform. Other keys some platforms/engines
-/// include (gender, quality, identifier, ...) are not modeled here on
-/// purpose — Step 47 found voice names/metadata can't be trusted to
-/// reliably encode gender, so this stays limited to what can actually be
-/// guaranteed.
+/// [name] and [locale] are stored: the two keys `flutter_tts` documents
+/// as present across every platform. The engine's own per-platform
+/// gender/quality/identifier metadata is not modeled here — Step 47
+/// found it isn't consistently present or trustworthy across devices —
+/// so [gender] (Step 49) is instead derived on demand from [name] via
+/// the same conservative hint list `VoiceManager` already uses for
+/// Automatic selection, and stays [TtsVoiceGender.unknown] whenever
+/// that name gives no reliable evidence either way.
 @immutable
 class TtsVoiceOption {
   final String name;
@@ -68,6 +80,23 @@ class TtsVoiceOption {
 
   /// True when this voice's own reported locale is English (`en*`).
   bool get isEnglish => locale.toLowerCase().startsWith('en');
+
+  /// Step 49 — best-effort gender read purely from this voice's own
+  /// [name], using the exact same name-hint lists `VoiceManager`
+  /// already trusts for its Automatic-selection heuristic
+  /// (`VoiceManager._maleHints`/`_femaleHints`) — no separate, possibly
+  /// inconsistent classifier. Returns [TtsVoiceGender.unknown] whenever
+  /// the name gives no reliable evidence either way (including when it
+  /// ambiguously matches both lists), which the Settings picker must
+  /// treat as "don't label this Male or Female" per Step 49.
+  TtsVoiceGender get gender {
+    final key = name.toLowerCase();
+    final male = VoiceManager._maleHints.any((hint) => key.contains(hint));
+    final female = VoiceManager._femaleHints.any((hint) => key.contains(hint));
+    if (male && !female) return TtsVoiceGender.male;
+    if (female && !male) return TtsVoiceGender.female;
+    return TtsVoiceGender.unknown;
+  }
 
   Map<String, String> toMap() => {'name': name, 'locale': locale};
 
@@ -183,6 +212,12 @@ class VoiceManager {
     await Future.delayed(const Duration(milliseconds: 150));
     if (myGeneration != _generation) return;
 
+    // Step 49: language detection and the visible/persisted `text` both
+    // still use the original, unmodified string — only the copy handed
+    // to the engine below is sanitized. Emoji contain no Arabic-script
+    // characters, so stripping them first would not change this result
+    // anyway, but keeping detection on the original string is the
+    // conservative choice.
     final isUrdu = _looksUrdu(text);
     await _applyNaturalDefaults(_tts, isUrdu: isUrdu);
     await _tryAsync(() => _tts.setLanguage(isUrdu ? 'ur-PK' : 'en-US'));
@@ -199,7 +234,10 @@ class VoiceManager {
     _state = VoiceState.speaking;
     _emit();
 
-    await _tryAsync(() => _tts.speak(text));
+    // Step 49: only the audio input is sanitized — whatever the caller
+    // is displaying on screen (e.g. `chat_bubble.dart`'s message text)
+    // is a completely separate string that this never touches.
+    await _tryAsync(() => _tts.speak(sanitizeForSpeech(text)));
   }
 
   /// Stops whatever is currently speaking/loading, if anything.
@@ -539,6 +577,86 @@ class VoiceManager {
     return chosen;
   }
 
+  // ---------------------------------------------------------------------
+  // Step 49 — emoji/decorative-symbol sanitization for TTS audio only.
+  // ---------------------------------------------------------------------
+
+  /// Every Unicode range/codepoint the emoji spec actually uses for
+  /// pictographic emoji, plus the invisible joiners/modifiers that only
+  /// ever appear glued to an emoji (variation selector, zero-width
+  /// joiner, combining enclosing keycap, regional-indicator flag
+  /// letters). Deliberately narrow and explicit rather than a broad
+  /// "delete this whole block" range — e.g. plain arrows (U+2190–U+21FF)
+  /// are NOT included wholesale, only the handful of codepoints from
+  /// that block (↔ ↕ ↖ ↗ ↘ ↙ ↩ ↪) that are actually rendered as emoji,
+  /// so real punctuation/symbols a reply might legitimately use for
+  /// meaning are never silently eaten. Never touches Urdu/Arabic script,
+  /// Latin letters, digits, or normal punctuation — none of those fall
+  /// in any of these ranges.
+  static final RegExp _emojiPattern = RegExp(
+    '[\u{1F1E6}-\u{1F1FF}]|' // regional indicator letters (flag emoji)
+    '[\u{1F300}-\u{1F5FF}]|' // misc symbols & pictographs
+    '[\u{1F600}-\u{1F64F}]|' // emoticons
+    '[\u{1F680}-\u{1F6FF}]|' // transport & map symbols
+    '[\u{1F700}-\u{1F77F}]|' // alchemical symbols
+    '[\u{1F780}-\u{1F7FF}]|' // geometric shapes extended
+    '[\u{1F800}-\u{1F8FF}]|' // supplemental arrows-C
+    '[\u{1F900}-\u{1F9FF}]|' // supplemental symbols & pictographs
+    '[\u{1FA00}-\u{1FA6F}]|' // chess symbols / symbols-A part 1
+    '[\u{1FA70}-\u{1FAFF}]|' // symbols & pictographs extended-A
+    '[\u{2600}-\u{26FF}]|'   // misc symbols (☀☂☺ etc.)
+    '[\u{2700}-\u{27BF}]|'   // dingbats (✅✈✌ etc.)
+    '[\u{2B05}-\u{2B07}]|'   // ⬅⬆⬇
+    '[\u{2B1B}\u{2B1C}]|'    // ⬛⬜
+    '[\u{2B50}\u{2B55}]|'    // ⭐⭕
+    '[\u{2934}\u{2935}]|'    // ⤴⤵
+    '[\u{2194}-\u{2199}]|'   // ↔↕↖↗↘↙ (emoji arrows only, not the wider arrow block)
+    '[\u{21A9}\u{21AA}]|'    // ↩↪
+    '[\u{231A}\u{231B}]|'    // ⌚⌛
+    '\u{2328}|'              // ⌨
+    '\u{23CF}|'              // ⏏
+    '[\u{23E9}-\u{23FA}]|'   // ⏩–⏺
+    '\u{24C2}|'              // Ⓜ
+    '[\u{25AA}\u{25AB}]|'    // ▪▫
+    '[\u{25B6}\u{25C0}]|'    // ▶◀
+    '[\u{25FB}-\u{25FE}]|'   // ◻◼◽◾
+    '\u{3030}|'              // 〰
+    '\u{303D}|'              // 〽
+    '[\u{3297}\u{3299}]|'    // ㊗㊙
+    '\u{203C}|'              // ‼
+    '\u{2049}|'              // ⁉
+    '\u{2122}|'              // ™
+    '\u{2139}|'              // ℹ
+    '\u{FE0F}|'              // variation selector-16 (emoji presentation)
+    '\u{200D}|'              // zero-width joiner (emoji sequences)
+    '\u{20E3}'               // combining enclosing keycap (e.g. 1️⃣)
+    ,
+    unicode: true,
+  );
+
+  /// Strips emoji and decorative pictographic symbols from [text] so it
+  /// can be handed to `FlutterTts.speak()` without the engine trying (and
+  /// usually failing badly) to pronounce something like "waving hand" or
+  /// "robot face". This is purely an audio-input transform: the caller's
+  /// own copy of [text] — what actually renders in the chat bubble — is
+  /// never touched, since this returns a new string rather than mutating
+  /// anything (Step 49 requirements 7–8). Urdu/Arabic script, English
+  /// letters, numbers, and normal punctuation are all outside every
+  /// range in [_emojiPattern], so none of it is ever removed.
+  @visibleForTesting
+  static String sanitizeForSpeech(String text) {
+    var out = text.replaceAll(_emojiPattern, '');
+    // Removing an emoji often leaves a run of doubled spaces (e.g. "Hi 👋
+    // there" -> "Hi  there") or a stray leading/trailing space around a
+    // line break — tidy those up so the speech doesn't include an
+    // unnaturally long pause, without collapsing intentional blank
+    // lines between paragraphs.
+    out = out.replaceAll(RegExp(r'[ \t]{2,}'), ' ');
+    out = out.replaceAll(RegExp(r'[ \t]+\n'), '\n');
+    out = out.replaceAll(RegExp(r'\n[ \t]+'), '\n');
+    return out.trim();
+  }
+
   static Future<void> _tryAsync(Future<void> Function() action) async {
     try {
       await action();
@@ -675,8 +793,8 @@ class VoiceManager {
     _emit();
 
     final sample = isUrdu
-        ? 'السلام علیکم، یہ اس آواز کا ایک مختصر نمونہ ہے۔'
-        : 'Hello, this is a short preview of this voice.';
+        ? 'السلام علیکم، یہ آواز کی جانچ ہے۔'
+        : 'Hello, this is a voice test.';
     await _tryAsync(() => _tts.speak(sample));
   }
 

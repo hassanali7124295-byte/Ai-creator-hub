@@ -57,7 +57,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   static String _voiceSummaryLabel(TtsVoiceOption? voice) =>
-      voice == null ? 'Automatic' : voice.name;
+      voice == null ? 'Automatic' : _voiceDisplayLabel(voice);
 
   Future<void> _openVoicePicker() async {
     final theme = ChatPalette.themeFor(context);
@@ -1008,11 +1008,51 @@ class _VoiceGroupHeader extends StatelessWidget {
   }
 }
 
+/// Step 49 — a human-readable name for a locale code, purely cosmetic
+/// (never used for any selection/matching logic, which stays keyed off
+/// the raw locale string exactly as the engine reported it). Falls back
+/// to the raw code untouched for anything not in this small known-common
+/// list, so an unrecognized locale is still shown honestly rather than
+/// mislabeled.
+String _friendlyLocaleName(String locale) {
+  const known = {
+    'ur-pk': 'Urdu (Pakistan)',
+    'ur-in': 'Urdu (India)',
+    'ur': 'Urdu',
+    'en-us': 'English (US)',
+    'en-gb': 'English (UK)',
+    'en-in': 'English (India)',
+    'en-au': 'English (Australia)',
+    'en-ca': 'English (Canada)',
+    'en': 'English',
+  };
+  return known[locale.toLowerCase()] ?? locale;
+}
+
+/// Step 49 — the voice-row label the picker actually leads with:
+/// "Male — Urdu (Pakistan)" / "Female — English (US)" when
+/// [TtsVoiceOption.gender] is reliably known, or a neutral
+/// "Urdu (Pakistan) — Voice" when it isn't. Never fabricates a gender —
+/// see [TtsVoiceGender] and Step 49 requirement 14.
+String _voiceDisplayLabel(TtsVoiceOption voice) {
+  final localeName = _friendlyLocaleName(voice.locale);
+  switch (voice.gender) {
+    case TtsVoiceGender.male:
+      return 'Male — $localeName';
+    case TtsVoiceGender.female:
+      return 'Female — $localeName';
+    case TtsVoiceGender.unknown:
+      return '$localeName — Voice';
+  }
+}
+
 /// One selectable voice row: radio-style selected/unselected leading
-/// icon (mirroring `_ThemeModeTile`'s look elsewhere in this file), the
-/// voice's actual name and locale exactly as the device reported them,
-/// and a trailing 🔊 preview button that shows a small spinner while that
-/// specific voice is being previewed.
+/// icon (mirroring `_ThemeModeTile`'s look elsewhere in this file), a
+/// human-readable "Male/Female — Language (Region)" (or, when gender
+/// can't be reliably determined, "Language (Region) — Voice") label as
+/// the primary line with the device's raw technical voice name as a
+/// smaller secondary line, and a trailing 🔊 preview button that shows a
+/// small spinner while that specific voice is being previewed.
 class _VoiceOptionTile extends StatelessWidget {
   final ColorScheme scheme;
   final ThemeData theme;
@@ -1056,7 +1096,7 @@ class _VoiceOptionTile extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      voice.name,
+                      _voiceDisplayLabel(voice),
                       style: theme.textTheme.bodyMedium?.copyWith(
                         fontWeight: FontWeight.w600,
                         color: selected ? scheme.primary : scheme.onSurface,
@@ -1064,10 +1104,11 @@ class _VoiceOptionTile extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                     ),
                     Text(
-                      voice.locale,
+                      voice.name,
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: scheme.onSurfaceVariant,
                       ),
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ],
                 ),
