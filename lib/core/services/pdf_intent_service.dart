@@ -60,6 +60,21 @@ class PdfIntentService {
   // Urdu-script action verbs: بنا (bana-) / تبدیل (tabdeel/convert).
   static final RegExp _urduAction = RegExp('بنا|تبدیل');
 
+  // Natural Roman-Urdu readiness phrases: PDF ready/taiyar karo.
+  static final RegExp _readinessAction = RegExp(
+    r'\b(ready|taiyar|tayyar)\b.*\bkar(?:o|do|dein|den)\b',
+    caseSensitive: false,
+  );
+
+  // Remove invisible Unicode formatting marks that can be inserted by
+  // mobile keyboards and break Roman-Urdu word matching.
+  static String _normalizeForDetection(String value) {
+    return value.replaceAll(
+      RegExp(r'[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]'),
+      '',
+    );
+  }
+
   static final RegExp _conversationWord = RegExp(
     r'conversation|chat|guftugu|guftago|گفتگو|چیٹ',
     caseSensitive: false,
@@ -85,13 +100,14 @@ class PdfIntentService {
   /// or `null` if it's an ordinary message that should go through the
   /// normal chat/Gemini flow untouched.
   static PdfExportTarget? detect(String text) {
-    final trimmed = text.trim();
+    final trimmed = _normalizeForDetection(text).trim();
     if (trimmed.isEmpty) return null;
     if (!_pdfWord.hasMatch(trimmed)) return null;
 
     final hasAction = _englishAction.hasMatch(trimmed) ||
         _romanUrduAction.hasMatch(trimmed) ||
-        _urduAction.hasMatch(trimmed);
+        _urduAction.hasMatch(trimmed) ||
+        _readinessAction.hasMatch(trimmed);
     if (!hasAction) return null;
 
     if (_conversationWord.hasMatch(trimmed)) return PdfExportTarget.conversation;
