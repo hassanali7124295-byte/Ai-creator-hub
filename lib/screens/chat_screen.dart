@@ -2554,14 +2554,32 @@ class _ChatScreenState extends State<ChatScreen> {
           // (not centered) right after the menu icon, in a bold serif
           // (Playfair Display) for a premium logo feel.
           centerTitle: false,
-          title: Text(
-            'Pak AI',
-            style: GoogleFonts.playfairDisplay(
-              fontSize: 30,
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.3,
-              color: _PakHome.emerald,
-            ),
+          // Step 48: premium wordmark — the existing brand mark
+          // (`PakLogoMark`, already used on the Home hero/app-bar
+          // widgets) is paired with the "Pak AI" text instead of plain
+          // text on its own, so the header reads as a designed logo
+          // lockup rather than a generic title. Font size trimmed
+          // slightly (30 -> 26) to sit in visual balance with the mark
+          // and the hamburger/profile buttons on either side, without
+          // changing the AppBar's height. Same font (Playfair Display),
+          // weight, and emerald brand color as before.
+          title: Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              const PakLogoMark(size: 30),
+              const SizedBox(width: 9),
+              Text(
+                'Pak AI',
+                style: GoogleFonts.playfairDisplay(
+                  fontSize: 26,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -0.3,
+                  height: 1.0,
+                  color: _PakHome.emerald,
+                ),
+              ),
+            ],
           ),
           actions: isHomeState
               ? const [ProfileAvatarButton()]
@@ -3909,8 +3927,18 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                   focusNode: _focusNode,
                   minLines: 1,
                   maxLines: 5,
-                  textInputAction: TextInputAction.send,
-                  onSubmitted: (_) => onSend(),
+                  keyboardType: TextInputType.multiline,
+                  // Step 48: the Android keyboard's own action glyph
+                  // must never behave as a second "send" control — the
+                  // green Pak AI button below is the only send/submit
+                  // control. `TextInputAction.newline`, paired with the
+                  // multiline `keyboardType` above, tells the IME to
+                  // show a return/newline action and makes it insert a
+                  // line break in the field instead of submitting.
+                  // `onSubmitted` is intentionally left unset (it used
+                  // to call `onSend()`) so nothing sends even on IMEs
+                  // that still fire a submit event for the return key.
+                  textInputAction: TextInputAction.newline,
                   decoration: InputDecoration(
                     hintText: 'Message Pak AI...',
                     hintStyle: TextStyle(
