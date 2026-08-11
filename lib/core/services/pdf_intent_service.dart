@@ -218,7 +218,7 @@ class PdfContentResolver {
   static ResolvedPdfContent? _resolveUserText(List<ChatMessage> messages) {
     for (var i = messages.length - 1; i >= 0; i--) {
       final m = messages[i];
-      if (_isUsable(m) && m.isUser) {
+      if (_isUsable(m) && m.isUser && PdfIntentService.detect(m.text) == null) {
         return ResolvedPdfContent(title: 'Notes', body: m.text.trim());
       }
     }
