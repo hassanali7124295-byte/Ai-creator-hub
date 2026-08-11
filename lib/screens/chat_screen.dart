@@ -2554,27 +2554,31 @@ class _ChatScreenState extends State<ChatScreen> {
           // (not centered) right after the menu icon, in a bold serif
           // (Playfair Display) for a premium logo feel.
           centerTitle: false,
-          // Step 48: premium wordmark — the existing brand mark
+          // Step 48/49: premium wordmark — the existing brand mark
           // (`PakLogoMark`, already used on the Home hero/app-bar
           // widgets) is paired with the "Pak AI" text instead of plain
           // text on its own, so the header reads as a designed logo
-          // lockup rather than a generic title. Font size trimmed
-          // slightly (30 -> 26) to sit in visual balance with the mark
-          // and the hamburger/profile buttons on either side, without
-          // changing the AppBar's height. Same font (Playfair Display),
-          // weight, and emerald brand color as before.
+          // lockup rather than a generic title. Step 49: text nudged
+          // slightly larger and heavier (26/w700 -> 28/w800, tighter
+          // letter spacing) than the Step 48 version for a bolder,
+          // more premium look, still well inside the AppBar's default
+          // toolbar height so the bar itself doesn't grow and the
+          // hamburger/profile buttons on either side don't move. Same
+          // font (Playfair Display) and emerald brand color as before;
+          // mark and text stay vertically centered against each other
+          // via `CrossAxisAlignment.center`.
           title: Row(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              const PakLogoMark(size: 30),
-              const SizedBox(width: 9),
+              const PakLogoMark(size: 32),
+              const SizedBox(width: 10),
               Text(
                 'Pak AI',
                 style: GoogleFonts.playfairDisplay(
-                  fontSize: 26,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: -0.3,
+                  fontSize: 28,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.4,
                   height: 1.0,
                   color: _PakHome.emerald,
                 ),
@@ -3887,14 +3891,23 @@ class _ChatInputBarState extends State<_ChatInputBar> {
             ],
           ),
           padding: const EdgeInsets.only(left: 4, right: 4),
-          // Step 33.1: wrapped in IntrinsicHeight purely so the send
-          // button below can be given a concrete, finite row height to
-          // center itself against — it does not change the row's own
-          // height (still whatever it naturally was: the tallest child,
-          // exactly as before), so the "+"/mic buttons and the text
-          // field are laid out identically to before this step.
-          child: IntrinsicHeight(
-            child: Row(
+          // Step 49: the send button used to be wrapped in
+          // `IntrinsicHeight` + `Align(alignment: Alignment.center)` so
+          // it could center itself against the row's full height — but
+          // that meant it drifted upward, toward the row's vertical
+          // midpoint, whenever the `TextField` grew past one line.
+          // The "+" and mic buttons never had that problem: they've
+          // always been pinned to the row's bottom edge via
+          // `crossAxisAlignment: CrossAxisAlignment.end` below plus
+          // their own `bottom: 2` padding. The send button now uses
+          // that exact same bottom-anchored pattern (see its Padding
+          // below), so all three trailing controls stay fixed to the
+          // bottom-right of the composer — only the text area above
+          // them grows — regardless of line count, keyboard state, or
+          // screen size. `IntrinsicHeight` is no longer needed (it
+          // existed solely to give the old `Align` something finite to
+          // center within) and has been removed.
+          child: Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Padding(
@@ -3985,21 +3998,13 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                   ),
                 ),
               ),
-              // Step 33.1 — Perfect Send Button Alignment: wrapped in an
-              // `Align` so the button centers itself vertically within the
-              // row's full (now-finite, via IntrinsicHeight above) height,
-              // instead of sitting flush against the row's bottom edge
-              // like the other end-aligned children. `widthFactor: 1.0`
-              // keeps Align shrink-wrapped to the button's own width, so
-              // it takes no extra horizontal space and every other child
-              // in this row keeps its exact existing position — this is a
-              // pure vertical-alignment fix. Size, icon, color, shape,
-              // animation, padding, and behavior below are all unchanged.
-              Align(
-                alignment: Alignment.center,
-                widthFactor: 1.0,
-                child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 2),
+              // Step 49: bottom-anchored, matching the "+" and mic
+              // buttons above — see the comment on the Row's
+              // `crossAxisAlignment` further up for why this replaced
+              // the old center-`Align` approach. Size, icon, color,
+              // shape, animation, and tap behavior below are unchanged.
+              Padding(
+                padding: const EdgeInsets.only(bottom: 2, left: 2, right: 2),
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 180),
                   curve: Curves.easeOut,
@@ -4075,10 +4080,8 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                     ),
                   ),
                 ),
-                ),
               ),
             ],
-            ),
           ),
         ),
       ),
