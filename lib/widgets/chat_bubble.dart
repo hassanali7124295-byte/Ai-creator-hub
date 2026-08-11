@@ -8,7 +8,6 @@ import '../core/services/document_intelligence_service.dart';
 import '../models/chat_message.dart';
 import 'attachment_preview.dart';
 import 'document_result_card.dart';
-import 'pdf_result_card.dart';
 
 /// A single chat bubble, aligned right (user) or left (AI), with distinct
 /// colors, Markdown rendering for AI replies, an error state for failed
@@ -349,15 +348,6 @@ class _ChatBubbleState extends State<ChatBubble> {
                 // three-dot typing bubble.
                 if (showLiveTypingDots)
                   _InlineLiveDot(label: widget.liveLabel)
-                // Step 50 — Local PDF Generator: the "📄 PDF ready" notice
-                // renders as a small card with Open/Share actions instead
-                // of its plain text — `message.text` still holds that
-                // plain "📄 PDF ready" string for copy/share/history.
-                else if (isAiReply && message.pdfResult != null)
-                  PdfResultCard(
-                    path: message.pdfResult!['path'] as String,
-                    fileName: message.pdfResult!['fileName'] as String,
-                  )
                 // Step 40 — Chat-Native Intelligence UX Refactor (Part 4):
                 // a Document Intelligence result renders as a compact,
                 // expandable card instead of the plain Markdown body.

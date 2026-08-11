@@ -7,7 +7,7 @@ import '../core/theme/chat_palette.dart';
 import '../models/ai_mode.dart';
 
 /// Shows the AI Modes picker as a glass, rounded-top bottom sheet — a grid
-/// of the 9 [AiMode]s, current selection highlighted. Returns the newly
+/// of the [AiMode]s, current selection highlighted. Returns the newly
 /// picked [AiMode], or `null` if dismissed without a change.
 ///
 /// Purely a chat-scoped overlay (Step 16): there's no separate screen or
