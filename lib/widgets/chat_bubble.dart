@@ -732,7 +732,6 @@ class _MorePopupState extends State<_MorePopup>
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final screen = MediaQuery.of(context).size;
     const popupWidth = 190.0;
     const edgeMargin = 12.0;
@@ -769,7 +768,14 @@ class _MorePopupState extends State<_MorePopup>
               scale: _scale,
               alignment: Alignment.topRight,
               child: Material(
-                color: theme.colorScheme.surfaceContainerHigh,
+                // Step 53: was `theme.colorScheme.surfaceContainerHigh`,
+                // which picked up a lavender/purple tint from the app's
+                // Material 3 color scheme. Fixed to an explicit, very
+                // light neutral gray instead — matches the clean,
+                // untinted surfaces already used elsewhere (e.g. the
+                // attachment sheet's white background and light-gray
+                // circles). Size/shape/elevation/shadow are unchanged.
+                color: const Color(0xFFF7F7F8),
                 elevation: 10,
                 shadowColor: Colors.black.withOpacity(0.28),
                 borderRadius: BorderRadius.circular(16),
@@ -781,7 +787,11 @@ class _MorePopupState extends State<_MorePopup>
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         _MorePopupTile(
-                          icon: Icons.ios_share_outlined,
+                          // Step 53: matched to the main action row's
+                          // Share icon (Icons.share_outlined) — was
+                          // previously the platform-style
+                          // ios_share_outlined, which looked different.
+                          icon: Icons.share_outlined,
                           label: 'Share',
                           onTap: widget.onShare == null
                               ? null
@@ -1000,9 +1010,11 @@ class _ActionIcon extends StatelessWidget {
                   onTap();
                 },
           child: Padding(
-            // ~40dp min touch target (21 icon + 9.5*2 padding ≈ 40).
-            padding: const EdgeInsets.all(9.5),
-            child: Icon(icon, size: 21, color: color),
+            // Step 53: icon reduced slightly (21 -> 19) for a lighter,
+            // more balanced look; padding increased to compensate so the
+            // ~40dp touch target is unchanged (19 icon + 10.5*2 ≈ 40).
+            padding: const EdgeInsets.all(10.5),
+            child: Icon(icon, size: 19, color: color),
           ),
         ),
       ),

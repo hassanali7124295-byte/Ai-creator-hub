@@ -134,24 +134,27 @@ class _AttachmentSheetContentState extends State<_AttachmentSheetContent>
                   ),
                 ),
                 const SizedBox(height: 28),
-                // Step 38: was a single-row `Row`; switched to `Wrap` so the
-                // two new options (Scan Text, Handwriting) flow onto a
-                // second line instead of squeezing all six into one row.
-                // Spacing/alignment intentionally mirror the old Row's
-                // `spaceEvenly` look — the original four buttons render
-                // identically to Step 37.
-                Wrap(
-                  alignment: WrapAlignment.spaceEvenly,
-                  spacing: 12,
-                  runSpacing: 22,
+                // Step 38 switched this to a `Wrap` to accommodate two
+                // extra options (Scan Text, Handwriting) that no longer
+                // exist here as of Step 40. With exactly the original four
+                // options (Camera, Gallery, Files, PDF) back in play,
+                // Step 51 reverted this to a single-row `Row`. Step 53:
+                // each button is now wrapped in `Expanded` so the row can
+                // never overflow/wrap on narrower screens — the four
+                // items always share the row evenly. Icons, labels,
+                // spacing look, and tap behavior are unchanged.
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
                     for (var i = 0; i < _options.length; i++)
-                      _AttachmentButton(
-                        option: _options[i],
-                        controller: _controller,
-                        index: i,
-                        onTap: () =>
-                            Navigator.of(context).pop(_options[i].type),
+                      Expanded(
+                        child: _AttachmentButton(
+                          option: _options[i],
+                          controller: _controller,
+                          index: i,
+                          onTap: () =>
+                              Navigator.of(context).pop(_options[i].type),
+                        ),
                       ),
                   ],
                 ),
