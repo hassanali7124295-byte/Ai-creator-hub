@@ -101,12 +101,19 @@ class ChatBubble extends StatefulWidget {
 const Color _kUserBubbleLight = Color(0xFFF3F4F6);
 const Color _kUserTextDark = Color(0xFF111827);
 
-enum _Feedback { none, liked }
+enum _Feedback { none, liked, disliked }
 
-/// Step 18.4: the AI action row now always shows exactly three actions —
-/// Copy, Speak, and a "More" overflow button that reveals the rest (Share,
-/// Regenerate, Like, Delete) in the existing bottom sheet — matching the
-/// ChatGPT pattern of a minimal, always-visible row under every reply.
+/// Step 18.4: the AI action row shows Copy, Speak, and a "More" overflow
+/// button that reveals the rest (Share, Regenerate, Like, Delete) in a
+/// bottom sheet — matching the ChatGPT pattern of a minimal, always-visible
+/// row under every reply.
+///
+/// Step 52: the row now shows all six actions inline — Copy, Like,
+/// Dislike, Voice, Share, More — matching the supplied reference image.
+/// Like/Dislike are still local-only UI feedback (not persisted), now
+/// mutually exclusive. The "More" button opens a small, compact popup
+/// (Share, Regenerate, Delete) anchored near the button itself instead of
+/// the old full-width bottom sheet.
 
 class _ChatBubbleState extends State<ChatBubble> {
   // Local-only UI feedback (not persisted) — a lightweight way to let
@@ -179,11 +186,15 @@ class _ChatBubbleState extends State<ChatBubble> {
     super.dispose();
   }
 
-  void _toggleLike() {
+  /// Toggles [value] on, or back off if it was already the active
+  /// feedback. Like and Dislike are mutually exclusive, same as the
+  /// existing (pre-Step-52) Like-only behavior — still local-only UI
+  /// state, not persisted.
+  void _toggleFeedback(_Feedback value) {
     setState(() {
-      _feedback = _feedback == _Feedback.liked ? _Feedback.none : _Feedback.liked;
+      _feedback = _feedback == value ? _Feedback.none : value;
     });
-    if (_feedback == _Feedback.liked) {
+    if (_feedback != _Feedback.none) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Thanks for the feedback!'),
@@ -193,17 +204,28 @@ class _ChatBubbleState extends State<ChatBubble> {
     }
   }
 
-  /// Opens the "More" bottom sheet with the overflow actions (Share,
-  /// Regenerate, Like, Delete). Disabled actions (e.g. Regenerate on an
-  /// older reply) render dimmed and inert, same as before.
-  void _openMoreMenu() {
+  void _toggleLike() => _toggleFeedback(_Feedback.liked);
+  void _toggleDislike() => _toggleFeedback(_Feedback.disliked);
+
+  /// Opens the compact "More" popup (Share, Regenerate, Delete) anchored
+  /// near the More button that was tapped. [buttonContext] is the More
+  /// icon's own context, used to find its on-screen position. Disabled
+  /// actions (e.g. Regenerate on an older reply) render dimmed and inert,
+  /// same as before.
+  void _openMoreMenu(BuildContext buttonContext) {
     HapticFeedback.selectionClick();
+    final box = buttonContext.findRenderObject() as RenderBox;
+    final overlayBox =
+        Overlay.of(context).context.findRenderObject() as RenderBox;
+    final anchor = box.localToGlobal(
+      Offset(box.size.width, box.size.height),
+      ancestor: overlayBox,
+    );
     _showMoreMenu(
       context: context,
+      anchor: anchor,
       onShare: widget.onShare,
       onRegenerate: widget.onRegenerate,
-      onLike: _toggleLike,
-      liked: _feedback == _Feedback.liked,
       onDelete: widget.onDelete,
     );
   }
@@ -471,6 +493,8 @@ class _ChatBubbleState extends State<ChatBubble> {
                       isSpeaking: widget.isSpeaking,
                       liked: _feedback == _Feedback.liked,
                       onToggleLike: _toggleLike,
+                      disliked: _feedback == _Feedback.disliked,
+                      onToggleDislike: _toggleDislike,
                     ),
                   ),
           ),
@@ -606,107 +630,203 @@ class _RetryChip extends StatelessWidget {
   }
 }
 
-/// Shows the ChatGPT/Claude-style overflow sheet with the actions that
-/// don't fit in the compact row: Share, Regenerate, Like, Delete. Each row
-/// renders dimmed and inert when its callback is `null` (e.g. Regenerate
-/// on anything but the latest reply).
+/// Step 52: shows a small, premium, contextual popup with the actions that
+/// don't fit in the six-icon row — Share, Regenerate, Delete — anchored
+/// near the More button rather than as a full-width bottom sheet. Each
+/// action renders dimmed and inert when its callback is `null` (e.g.
+/// Regenerate on anything but the latest reply). Dismisses on outside tap
+/// or after choosing an action, both with a matching reverse animation.
 Future<void> _showMoreMenu({
   required BuildContext context,
+  required Offset anchor,
   required VoidCallback? onShare,
   required VoidCallback? onRegenerate,
-  required VoidCallback onLike,
-  required bool liked,
   required VoidCallback? onDelete,
 }) {
-  final theme = Theme.of(context);
-  return showModalBottomSheet<void>(
-    context: context,
-    backgroundColor: theme.colorScheme.surfaceContainerHigh,
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+  final overlay = Overlay.of(context);
+  final completer = Completer<void>();
+  late OverlayEntry entry;
+  entry = OverlayEntry(
+    builder: (overlayContext) => _MorePopup(
+      anchor: anchor,
+      onShare: onShare,
+      onRegenerate: onRegenerate,
+      onDelete: onDelete,
+      onDismissed: () {
+        entry.remove();
+        if (!completer.isCompleted) completer.complete();
+      },
     ),
-    builder: (sheetContext) {
-      return SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Center(
-                child: Container(
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.onSurfaceVariant.withOpacity(0.3),
-                    borderRadius: BorderRadius.circular(2),
+  );
+  overlay.insert(entry);
+  return completer.future;
+}
+
+/// The compact popup itself: a small rounded card containing Share,
+/// Regenerate, and Delete, positioned just below-and-left of [anchor] (the
+/// bottom-right corner of the tapped More button) and clamped so it never
+/// runs off-screen. A full-screen transparent barrier behind it closes the
+/// popup on outside tap. Opens with a combined scale-up + fade-in (ease
+/// out) and closes with a matching scale-down + fade-out (ease in), per
+/// the Step 52 spec — short, subtle, not flashy.
+class _MorePopup extends StatefulWidget {
+  final Offset anchor;
+  final VoidCallback? onShare;
+  final VoidCallback? onRegenerate;
+  final VoidCallback? onDelete;
+  final VoidCallback onDismissed;
+
+  const _MorePopup({
+    required this.anchor,
+    required this.onShare,
+    required this.onRegenerate,
+    required this.onDelete,
+    required this.onDismissed,
+  });
+
+  @override
+  State<_MorePopup> createState() => _MorePopupState();
+}
+
+class _MorePopupState extends State<_MorePopup>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 160),
+    reverseDuration: const Duration(milliseconds: 120),
+  );
+  late final Animation<double> _scale = CurvedAnimation(
+    parent: _controller,
+    curve: Curves.easeOut,
+    reverseCurve: Curves.easeIn,
+  );
+  late final Animation<double> _fade = CurvedAnimation(
+    parent: _controller,
+    curve: Curves.easeOut,
+    reverseCurve: Curves.easeIn,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.forward();
+  }
+
+  Future<void> _dismiss() async {
+    await _controller.reverse();
+    if (mounted) widget.onDismissed();
+  }
+
+  void _runAction(VoidCallback? action) {
+    if (action == null) return;
+    HapticFeedback.selectionClick();
+    _dismiss();
+    action();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final screen = MediaQuery.of(context).size;
+    const popupWidth = 190.0;
+    const edgeMargin = 12.0;
+
+    // Right-align the popup to the anchor (bottom-right of the More
+    // button), clamped so it stays fully on-screen.
+    double left = widget.anchor.dx - popupWidth;
+    if (left < edgeMargin) left = edgeMargin;
+    if (left + popupWidth > screen.width - edgeMargin) {
+      left = screen.width - popupWidth - edgeMargin;
+    }
+    double top = widget.anchor.dy + 6;
+    // Flip above the anchor if there isn't enough room below.
+    const estimatedHeight = 168.0;
+    if (top + estimatedHeight > screen.height - edgeMargin) {
+      top = widget.anchor.dy - estimatedHeight - 6;
+    }
+
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _dismiss,
+            child: const SizedBox.shrink(),
+          ),
+        ),
+        Positioned(
+          left: left,
+          top: top,
+          child: FadeTransition(
+            opacity: _fade,
+            child: ScaleTransition(
+              scale: _scale,
+              alignment: Alignment.topRight,
+              child: Material(
+                color: theme.colorScheme.surfaceContainerHigh,
+                elevation: 10,
+                shadowColor: Colors.black.withOpacity(0.28),
+                borderRadius: BorderRadius.circular(16),
+                child: SizedBox(
+                  width: popupWidth,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _MorePopupTile(
+                          icon: Icons.ios_share_outlined,
+                          label: 'Share',
+                          onTap: widget.onShare == null
+                              ? null
+                              : () => _runAction(widget.onShare),
+                        ),
+                        _MorePopupTile(
+                          icon: Icons.refresh_rounded,
+                          label: 'Regenerate',
+                          onTap: widget.onRegenerate == null
+                              ? null
+                              : () => _runAction(widget.onRegenerate),
+                        ),
+                        _MorePopupTile(
+                          icon: Icons.delete_outline_rounded,
+                          label: 'Delete',
+                          destructive: true,
+                          onTap: widget.onDelete == null
+                              ? null
+                              : () => _runAction(widget.onDelete),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
-              const SizedBox(height: 10),
-              _MoreMenuTile(
-                icon: Icons.ios_share_outlined,
-                label: 'Share',
-                onTap: onShare == null
-                    ? null
-                    : () {
-                        Navigator.of(sheetContext).pop();
-                        onShare();
-                      },
-              ),
-              _MoreMenuTile(
-                icon: Icons.refresh_rounded,
-                label: 'Regenerate',
-                onTap: onRegenerate == null
-                    ? null
-                    : () {
-                        Navigator.of(sheetContext).pop();
-                        onRegenerate();
-                      },
-              ),
-              _MoreMenuTile(
-                icon: liked ? Icons.thumb_up_rounded : Icons.thumb_up_outlined,
-                label: liked ? 'Liked' : 'Like',
-                active: liked,
-                onTap: () {
-                  Navigator.of(sheetContext).pop();
-                  onLike();
-                },
-              ),
-              _MoreMenuTile(
-                icon: Icons.delete_outline_rounded,
-                label: 'Delete',
-                destructive: true,
-                onTap: onDelete == null
-                    ? null
-                    : () {
-                        Navigator.of(sheetContext).pop();
-                        onDelete();
-                      },
-              ),
-            ],
+            ),
           ),
         ),
-      );
-    },
-  );
+      ],
+    );
+  }
 }
 
-/// A single row in the "More" overflow sheet — icon, label, and a subtle
-/// pressed state, styled to match [showAttachmentSheet] for a consistent,
-/// premium feel across the app's bottom sheets.
-class _MoreMenuTile extends StatelessWidget {
+/// A single compact row inside the More popup — icon, label, and a subtle
+/// pressed state.
+class _MorePopupTile extends StatelessWidget {
   final IconData icon;
   final String label;
   final VoidCallback? onTap;
-  final bool active;
   final bool destructive;
 
-  const _MoreMenuTile({
+  const _MorePopupTile({
     required this.icon,
     required this.label,
     required this.onTap,
-    this.active = false,
     this.destructive = false,
   });
 
@@ -718,29 +838,21 @@ class _MoreMenuTile extends StatelessWidget {
         ? theme.colorScheme.onSurfaceVariant.withOpacity(0.35)
         : destructive
             ? theme.colorScheme.error
-            : active
-                ? theme.colorScheme.primary
-                : theme.colorScheme.onSurface;
+            : theme.colorScheme.onSurface;
 
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        borderRadius: BorderRadius.circular(14),
-        onTap: onTap == null
-            ? null
-            : () {
-                HapticFeedback.selectionClick();
-                onTap!();
-              },
+        onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 13),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           child: Row(
             children: [
-              Icon(icon, size: 20, color: color),
-              const SizedBox(width: 16),
+              Icon(icon, size: 18, color: color),
+              const SizedBox(width: 12),
               Text(
                 label,
-                style: theme.textTheme.bodyLarge?.copyWith(
+                style: theme.textTheme.bodyMedium?.copyWith(
                   color: color,
                   fontWeight: FontWeight.w500,
                 ),
@@ -753,21 +865,24 @@ class _MoreMenuTile extends StatelessWidget {
   }
 }
 
-/// The AI-reply action row: exactly three actions — Copy, Speak, and More
-/// (which opens the existing overflow sheet for Share, Regenerate, Like,
-/// and Delete) — always shown once a reply finishes streaming. Styled as
-/// a minimal, transparent, borderless row of icons (no pill background,
-/// no card, no shadow), matching the ChatGPT reply-action pattern.
+/// The AI-reply action row. Step 52: expanded from three to six actions,
+/// shown in this exact order to match the supplied reference image —
+/// Copy, Like, Dislike, Voice, Share, More (the last opens the compact
+/// popup with Share, Regenerate, Delete). Styled as a minimal,
+/// transparent, borderless row of icons (no pill background, no card, no
+/// shadow), matching the reference's clean, outlined icon language.
 class _ActionRow extends StatelessWidget {
   final VoidCallback? onCopy;
   final VoidCallback? onShare;
   final VoidCallback? onRegenerate;
   final VoidCallback? onReadAloud;
   final VoidCallback? onDelete;
-  final VoidCallback onMore;
+  final void Function(BuildContext buttonContext) onMore;
   final bool isSpeaking;
   final bool liked;
   final VoidCallback onToggleLike;
+  final bool disliked;
+  final VoidCallback onToggleDislike;
 
   const _ActionRow({
     required this.onCopy,
@@ -779,13 +894,14 @@ class _ActionRow extends StatelessWidget {
     required this.isSpeaking,
     required this.liked,
     required this.onToggleLike,
+    required this.disliked,
+    required this.onToggleDislike,
   });
 
   @override
   Widget build(BuildContext context) {
-    // Share, Regenerate, and Like/Delete stay reachable only through the
-    // "More" overflow sheet (unchanged) — the visible row never exceeds
-    // the three ChatGPT-style actions below.
+    // Regenerate stays reachable only through the "More" popup — the
+    // visible row holds the six reference-image actions below.
     return Container(
       decoration: const BoxDecoration(
         color: Colors.transparent,
@@ -795,23 +911,47 @@ class _ActionRow extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           _ActionIcon(
-            icon: Icons.content_copy_rounded,
+            icon: Icons.copy_outlined,
             tooltip: 'Copy',
             onTap: onCopy,
           ),
-          const SizedBox(width: 6),
+          const SizedBox(width: 4),
+          _ActionIcon(
+            icon: liked ? Icons.thumb_up_rounded : Icons.thumb_up_outlined,
+            tooltip: liked ? 'Liked' : 'Like',
+            active: liked,
+            onTap: onToggleLike,
+          ),
+          const SizedBox(width: 4),
+          _ActionIcon(
+            icon: disliked
+                ? Icons.thumb_down_rounded
+                : Icons.thumb_down_outlined,
+            tooltip: disliked ? 'Disliked' : 'Dislike',
+            active: disliked,
+            onTap: onToggleDislike,
+          ),
+          const SizedBox(width: 4),
           _ActionIcon(
             icon: isSpeaking
-                ? Icons.stop_circle_rounded
-                : Icons.volume_up_rounded,
+                ? Icons.stop_circle_outlined
+                : Icons.volume_up_outlined,
             tooltip: isSpeaking ? 'Stop' : 'Speak',
             onTap: onReadAloud,
           ),
-          const SizedBox(width: 6),
+          const SizedBox(width: 4),
           _ActionIcon(
-            icon: Icons.more_horiz_rounded,
-            tooltip: 'More',
-            onTap: onMore,
+            icon: Icons.share_outlined,
+            tooltip: 'Share',
+            onTap: onShare,
+          ),
+          const SizedBox(width: 4),
+          Builder(
+            builder: (moreContext) => _ActionIcon(
+              icon: Icons.more_vert_rounded,
+              tooltip: 'More',
+              onTap: () => onMore(moreContext),
+            ),
           ),
         ],
       ),
@@ -827,11 +967,13 @@ class _ActionIcon extends StatelessWidget {
   final IconData icon;
   final String tooltip;
   final VoidCallback? onTap;
+  final bool active;
 
   const _ActionIcon({
     required this.icon,
     required this.tooltip,
     required this.onTap,
+    this.active = false,
   });
 
   @override
@@ -840,7 +982,9 @@ class _ActionIcon extends StatelessWidget {
     final onTap = this.onTap;
     final color = onTap == null
         ? theme.colorScheme.onSurfaceVariant.withOpacity(0.35)
-        : theme.colorScheme.onSurfaceVariant;
+        : active
+            ? theme.colorScheme.primary
+            : theme.colorScheme.onSurfaceVariant;
 
     return Tooltip(
       message: tooltip,
