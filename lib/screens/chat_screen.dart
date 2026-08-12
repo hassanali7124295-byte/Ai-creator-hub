@@ -3832,42 +3832,48 @@ class _ChatInputBarState extends State<_ChatInputBar> {
         // text field gains focus, so the composer visibly "wakes up" —
         // and the shadow eases off in dark mode, where a plain dark
         // drop-shadow just reads as a muddy smear.
+        // Step 49 — Composer Refresh: restyled to a clean, ChatGPT-style
+        // white/light pill (was a tinted surfaceContainerHigh fill) with a
+        // taller, more premium proportion (~64dp vs ~52dp) and a larger
+        // border radius. Pak AI's green identity is kept as a soft, always-
+        // on pastel edge (previously invisible except while focused) plus
+        // a very faint green outer glow — not a heavy/dark outline. No
+        // logic below this decoration changed: same focus animation, same
+        // Step 48 bottom-anchored button alignment, same +/text/mic/send
+        // order and behavior.
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
           curve: Curves.easeOut,
-          constraints: const BoxConstraints(minHeight: 52),
-          // Step 27B: a faint top-to-bottom emerald-tinted gradient (was a
-          // flat fill) plus a slightly deeper, softer shadow — the
-          // "floating premium pill" look — while every focus/typing
-          // behavior underneath stays exactly as it was.
+          constraints: const BoxConstraints(minHeight: 64),
           decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                theme.colorScheme.surfaceContainerHigh,
-                theme.colorScheme.surfaceContainerHigh.withOpacity(0.96),
-              ],
-            ),
-            borderRadius: BorderRadius.circular(28),
+            color: isDark
+                ? theme.colorScheme.surfaceContainerHigh
+                : Colors.white,
+            borderRadius: BorderRadius.circular(32),
             border: Border.all(
-              color: _focused
-                  ? theme.colorScheme.primary.withOpacity(0.55)
-                  : theme.colorScheme.outlineVariant.withOpacity(0.0),
-              width: 1.4,
+              // Step 49: always-visible soft pastel-green edge (Pak AI's
+              // identity), brightening slightly on focus rather than
+              // appearing from nothing.
+              color: _PakHome.emerald.withOpacity(_focused ? 0.42 : 0.22),
+              width: 1.3,
             ),
             boxShadow: [
+              // Very subtle green outer glow — the "integrated" Pak AI
+              // accent rather than a traditional form-field border.
               BoxShadow(
-                color: (_focused
-                        ? theme.colorScheme.primary
-                        : theme.colorScheme.shadow)
-                    .withOpacity(isDark ? 0.06 : (_focused ? 0.14 : 0.08)),
-                blurRadius: _focused ? 22 : 18,
-                offset: const Offset(0, 6),
+                color: _PakHome.emerald.withOpacity(_focused ? 0.16 : 0.08),
+                blurRadius: _focused ? 20 : 14,
+                spreadRadius: 0.5,
+              ),
+              // Minimal neutral elevation shadow for lift off the page.
+              BoxShadow(
+                color: Colors.black.withOpacity(isDark ? 0.10 : 0.06),
+                blurRadius: 10,
+                offset: const Offset(0, 3),
               ),
             ],
           ),
-          padding: const EdgeInsets.only(left: 4, right: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 8),
           // Step 48: the send button is now pinned to the row's bottom
           // edge with the same `Padding(bottom: 2)` treatment as the "+"
           // and mic buttons, instead of being vertically centered against
@@ -3894,7 +3900,10 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                         onAttachment();
                       },
                       child: Padding(
-                        padding: const EdgeInsets.all(12),
+                        // Step 49: padding nudged 12→13 to stay visually
+                        // balanced against the taller composer and larger
+                        // send button; icon itself is unchanged.
+                        padding: const EdgeInsets.all(13),
                         child: Icon(
                           Icons.add_rounded,
                           color: theme.colorScheme.onSurfaceVariant,
@@ -3922,7 +3931,10 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                     focusedBorder: InputBorder.none,
                     filled: false,
                     isCollapsed: true,
-                    contentPadding: const EdgeInsets.symmetric(vertical: 16),
+                    // Step 49: vertical padding 16→19 so a single line of
+                    // text sits centered in the new ~64dp pill instead of
+                    // hugging the old, shorter bar.
+                    contentPadding: const EdgeInsets.symmetric(vertical: 19),
                   ),
                 ),
               ),
@@ -3947,7 +3959,9 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                         onVoice();
                       },
                       child: Padding(
-                        padding: const EdgeInsets.all(11),
+                        // Step 49: padding 11→13 to match the "+" button's
+                        // new size, keeping both side icons balanced.
+                        padding: const EdgeInsets.all(13),
                         child: Icon(
                           Icons.mic_none_rounded,
                           size: 21,
@@ -3961,8 +3975,11 @@ class _ChatInputBarState extends State<_ChatInputBar> {
               // Step 48: pinned to the row's bottom edge (matching the "+"
               // and mic buttons above) instead of vertically centering
               // against the full row height — see the Step 48 note by the
-              // Row above. Size, icon, color, shape, animation, and
-              // behavior below are all unchanged.
+              // Row above. Step 49: button enlarged (~34dp → ~50dp) and
+              // its green fill is now the Pak AI brand primary at full
+              // strength once there's something to send, making it the
+              // most visible green accent in the bar — position/anchoring
+              // logic, color source, shape, and behavior are unchanged.
               Padding(
                 padding: const EdgeInsets.only(bottom: 2),
                 child: Padding(
@@ -4006,7 +4023,11 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                         // from 42dp to 34dp — a 19% reduction — while
                         // keeping the same color, icon, animation, and
                         // behavior untouched.
-                        padding: const EdgeInsets.all(8),
+                        // Step 49: padding 8→15 and icon/stop/spinner sizes
+                        // bumped to grow the button to ~50dp (within the
+                        // requested 48-52dp range) — same color, animation,
+                        // and behavior otherwise untouched.
+                        padding: const EdgeInsets.all(15),
                         child: AnimatedSwitcher(
                           duration: const Duration(milliseconds: 180),
                           transitionBuilder: (child, animation) =>
@@ -4014,8 +4035,8 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                           child: isStreaming
                               ? Container(
                                   key: const ValueKey('stop'),
-                                  width: 10,
-                                  height: 10,
+                                  width: 12,
+                                  height: 12,
                                   decoration: BoxDecoration(
                                     color: theme.colorScheme.onPrimary,
                                     borderRadius: BorderRadius.circular(3),
@@ -4024,8 +4045,8 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                               : isSending
                                   ? SizedBox(
                                       key: const ValueKey('sending'),
-                                      width: 14,
-                                      height: 14,
+                                      width: 16,
+                                      height: 16,
                                       child: CircularProgressIndicator(
                                         strokeWidth: 2,
                                         color: theme.colorScheme.onPrimary,
@@ -4035,7 +4056,7 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                                       Icons.arrow_upward_rounded,
                                       key: const ValueKey('send'),
                                       color: theme.colorScheme.onPrimary,
-                                      size: 18,
+                                      size: 20,
                                     ),
                         ),
                       ),
