@@ -597,18 +597,17 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  /// Step 26.1 / Step 31: the floating "Jump to Latest" control, shown
-  /// only while auto-scroll is paused AND fresh text has actually arrived
-  /// below the fold (`_newContentWhilePaused`) — not merely because the
-  /// person has scrolled up to reread something. Lives in a `Positioned`
-  /// overlay (not in the list's own layout flow) and only ever
-  /// fades/slides in place, so its appearance never shifts or jitters the
-  /// message list itself. Step 31 restyled it from a labeled capsule pill
-  /// to a small circular icon-only button (44dp) — same visibility logic,
-  /// same tap target/handler, same fade+slide entrance, unchanged
-  /// scrolling behavior.
+  /// Step 26.1 / Step 31 / Step 48: the floating "Jump to Latest" control.
+  /// Step 48 fix: visibility now depends only on `!_followBottom` — i.e.
+  /// the button shows any time the person is away from the bottom of the
+  /// list, exactly like ChatGPT/Claude, not only when fresh text has also
+  /// arrived while paused. (`_newContentWhilePaused` is still tracked and
+  /// still clears the same way, but no longer gates visibility.) Lives in
+  /// a `Positioned` overlay (not in the list's own layout flow) and only
+  /// ever fades/slides in place, so its appearance never shifts or
+  /// jitters the message list itself.
   Widget _buildJumpToLatestButton(ThemeData theme) {
-    final visible = !_followBottom && _newContentWhilePaused;
+    final visible = !_followBottom;
     const double size = 44;
     return Positioned(
       left: 0,
@@ -2554,36 +2553,14 @@ class _ChatScreenState extends State<ChatScreen> {
           // (not centered) right after the menu icon, in a bold serif
           // (Playfair Display) for a premium logo feel.
           centerTitle: false,
-          // Step 48/49: premium wordmark — the existing brand mark
-          // (`PakLogoMark`, already used on the Home hero/app-bar
-          // widgets) is paired with the "Pak AI" text instead of plain
-          // text on its own, so the header reads as a designed logo
-          // lockup rather than a generic title. Step 49: text nudged
-          // slightly larger and heavier (26/w700 -> 28/w800, tighter
-          // letter spacing) than the Step 48 version for a bolder,
-          // more premium look, still well inside the AppBar's default
-          // toolbar height so the bar itself doesn't grow and the
-          // hamburger/profile buttons on either side don't move. Same
-          // font (Playfair Display) and emerald brand color as before;
-          // mark and text stay vertically centered against each other
-          // via `CrossAxisAlignment.center`.
-          title: Row(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              const PakLogoMark(size: 32),
-              const SizedBox(width: 10),
-              Text(
-                'Pak AI',
-                style: GoogleFonts.playfairDisplay(
-                  fontSize: 28,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: -0.4,
-                  height: 1.0,
-                  color: _PakHome.emerald,
-                ),
-              ),
-            ],
+          title: Text(
+            'Pak AI',
+            style: GoogleFonts.playfairDisplay(
+              fontSize: 30,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -0.3,
+              color: _PakHome.emerald,
+            ),
           ),
           actions: isHomeState
               ? const [ProfileAvatarButton()]
@@ -3891,22 +3868,15 @@ class _ChatInputBarState extends State<_ChatInputBar> {
             ],
           ),
           padding: const EdgeInsets.only(left: 4, right: 4),
-          // Step 49: the send button used to be wrapped in
-          // `IntrinsicHeight` + `Align(alignment: Alignment.center)` so
-          // it could center itself against the row's full height — but
-          // that meant it drifted upward, toward the row's vertical
-          // midpoint, whenever the `TextField` grew past one line.
-          // The "+" and mic buttons never had that problem: they've
-          // always been pinned to the row's bottom edge via
-          // `crossAxisAlignment: CrossAxisAlignment.end` below plus
-          // their own `bottom: 2` padding. The send button now uses
-          // that exact same bottom-anchored pattern (see its Padding
-          // below), so all three trailing controls stay fixed to the
-          // bottom-right of the composer — only the text area above
-          // them grows — regardless of line count, keyboard state, or
-          // screen size. `IntrinsicHeight` is no longer needed (it
-          // existed solely to give the old `Align` something finite to
-          // center within) and has been removed.
+          // Step 48: the send button is now pinned to the row's bottom
+          // edge with the same `Padding(bottom: 2)` treatment as the "+"
+          // and mic buttons, instead of being vertically centered against
+          // the full (IntrinsicHeight) row height. With `crossAxisAlignment:
+          // end`, every icon button in this row — attach, mic, send — now
+          // anchors to the bottom-right/bottom-left corners identically,
+          // so growing the text field to multiple lines only ever grows
+          // the row upward from a fixed bottom edge; it can never push the
+          // send button up toward the middle the way center-alignment did.
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
@@ -3940,18 +3910,8 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                   focusNode: _focusNode,
                   minLines: 1,
                   maxLines: 5,
-                  keyboardType: TextInputType.multiline,
-                  // Step 48: the Android keyboard's own action glyph
-                  // must never behave as a second "send" control — the
-                  // green Pak AI button below is the only send/submit
-                  // control. `TextInputAction.newline`, paired with the
-                  // multiline `keyboardType` above, tells the IME to
-                  // show a return/newline action and makes it insert a
-                  // line break in the field instead of submitting.
-                  // `onSubmitted` is intentionally left unset (it used
-                  // to call `onSend()`) so nothing sends even on IMEs
-                  // that still fire a submit event for the return key.
-                  textInputAction: TextInputAction.newline,
+                  textInputAction: TextInputAction.send,
+                  onSubmitted: (_) => onSend(),
                   decoration: InputDecoration(
                     hintText: 'Message Pak AI...',
                     hintStyle: TextStyle(
@@ -3998,13 +3958,15 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                   ),
                 ),
               ),
-              // Step 49: bottom-anchored, matching the "+" and mic
-              // buttons above — see the comment on the Row's
-              // `crossAxisAlignment` further up for why this replaced
-              // the old center-`Align` approach. Size, icon, color,
-              // shape, animation, and tap behavior below are unchanged.
+              // Step 48: pinned to the row's bottom edge (matching the "+"
+              // and mic buttons above) instead of vertically centering
+              // against the full row height — see the Step 48 note by the
+              // Row above. Size, icon, color, shape, animation, and
+              // behavior below are all unchanged.
               Padding(
-                padding: const EdgeInsets.only(bottom: 2, left: 2, right: 2),
+                padding: const EdgeInsets.only(bottom: 2),
+                child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 2),
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 180),
                   curve: Curves.easeOut,
@@ -4079,6 +4041,7 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                       ),
                     ),
                   ),
+                ),
                 ),
               ),
             ],
