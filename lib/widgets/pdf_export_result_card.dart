@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -54,7 +55,13 @@ class _PdfExportResultCardState extends State<PdfExportResultCard> {
         [XFile(file.path, mimeType: 'application/pdf')],
         text: 'Pak AI — ${widget.result.fileName}',
       );
-    } catch (_) {
+    } catch (e, stackTrace) {
+      // Step 59: log the real share_plus failure instead of discarding it —
+      // this action already worked reliably for the existing "Share on AI
+      // reply" flow, so a failure here during PDF export is worth being
+      // able to see in Logcat rather than guessing.
+      debugPrint('[PdfExport] PDF_EXPORT_SHARE_EXCEPTION: $e');
+      debugPrint('[PdfExport] PDF_EXPORT_SHARE_STACKTRACE: $stackTrace');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(

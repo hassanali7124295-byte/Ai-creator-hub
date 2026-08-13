@@ -1309,7 +1309,14 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() {
         _messages.add(ChatMessage(text: e.message, isUser: false, isError: true));
       });
-    } catch (_) {
+    } catch (e, stackTrace) {
+      // Step 59: this call site had its own bare `catch (_)` on top of the
+      // one inside `PdfExportService.generate` — belt-and-suspenders, but
+      // it meant a failure that somehow originated here (rather than
+      // inside the service) was *also* silently discarded. Logged the same
+      // way now, so nothing on the PDF-export path can hide its cause.
+      debugPrint('[PdfExport] PDF_EXPORT_EXCEPTION (chat_screen): $e');
+      debugPrint('[PdfExport] PDF_EXPORT_STACKTRACE (chat_screen): $stackTrace');
       if (!mounted) return;
       setState(() {
         _messages.add(
