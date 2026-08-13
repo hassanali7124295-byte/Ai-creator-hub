@@ -4,7 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:animate_do/animate_do.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show compute;
+import 'package:flutter/foundation.dart' show compute, debugPrint;
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image/image.dart' as img;
@@ -1121,45 +1121,96 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   // ---------------------------------------------------------------------
-  // Step 56 — AI Q&A → PDF Export Feature
+  // Step 56/57 — AI Q&A → PDF Export Feature
   // ---------------------------------------------------------------------
 
-  /// Local, keyword-based detection of a "turn this into a PDF" request —
-  /// same zero-Gemini-call philosophy as `_detectSmartIntent` above, just
-  /// for plain-text (no-attachment) turns. Returns `null` for anything
-  /// ambiguous, including a genuine question *about* PDFs ("What is a
-  /// PDF?", "PDF kya hota hai?") — those fall straight through to the
-  /// normal chat flow, unchanged, because they contain no export/action
-  /// cue below.
-  PdfExportScope? _detectPdfExportIntent(String text) {
-    final t = text.toLowerCase().trim();
-    if (!RegExp(r'\bpdf\b').hasMatch(t)) return null;
+  /// Step 57: temporary diagnostic logging for the PDF intent detector —
+  /// prints `PDF_INTENT_CHECK`/`PDF_INTENT_RESULT` lines so a real-device
+  /// test can confirm what the detector actually saw and decided. Safe to
+  /// leave on (it's a single `debugPrint` per plain-text send, stripped
+  /// entirely from release binaries by `debugPrint`'s own no-op-in-profile/
+  /// release behavior being irrelevant here since this is just a guarded
+  /// call) but flip to `false` — or delete the two `debugPrint` calls below
+  /// — once you've confirmed detection is working as expected.
+  static const bool _kDebugPdfIntent = true;
 
-    const actionCues = [
-      'bana do', 'bana den', 'bana dein', 'banado', 'bnado', 'bna do',
-      'bana dijiye', 'bana kar do', 'bana kar den', 'bana k do',
-      'mein bana', 'mein de do', 'mein daal do', 'mein convert',
-      'convert', 'download', 'export', 'generate',
-      'create a pdf', 'create pdf', 'make a pdf', 'make pdf',
-      'make this a pdf', 'make these a pdf', 'save as pdf', 'save this as pdf',
-      'pdf bana', 'pdf mein de', 'de do',
-    ];
-    final hasActionCue = actionCues.any(t.contains);
-    if (!hasActionCue) return null;
+  /// Lowercases, trims, collapses whitespace, and folds the many ways
+  /// people write "Q&A" ("Q/A", "Q&A", "question answer(s)", "questions
+  /// and answers", "sawal jawab") down to one canonical `qa` token — so
+  /// every check below only has to consider a single spelling.
+  String _normalizeForPdfIntent(String input) {
+    var t = input.toLowerCase().trim();
+    t = t.replaceAll(RegExp(r'\s+'), ' ');
+    t = t.replaceAll(RegExp(r'\bq\s*[/&]\s*a\b'), 'qa');
+    t = t.replaceAll(RegExp(r'\bquestions?\s+and\s+answers?\b'), 'qa');
+    t = t.replaceAll(RegExp(r'\bquestion\s+answer\b'), 'qa');
+    t = t.replaceAll(RegExp(r'\bsawal\s+jawab\b'), 'qa');
+    return t;
+  }
+
+  /// Local, verb-based detection of a "turn this into a PDF" request — same
+  /// zero-Gemini-call philosophy as `_detectSmartIntent` above, just for
+  /// plain-text (no-attachment) turns.
+  ///
+  /// Step 57 rewrite: the original Step 56 version matched against a fixed
+  /// list of exact multi-word phrases (`'make this a pdf'`, `'save this as
+  /// pdf'`, ...). That's brittle — real phrasing varies word-for-word
+  /// ("make this Q&A a PDF", "save this chat as PDF", "PDF mein de do"
+  /// none of which are literally in that list) and can silently fall
+  /// through to the normal Gemini flow instead of exporting. This version
+  /// instead looks for an actual *action verb* (Roman Urdu "bana"-stem
+  /// imperatives, "de do", or English convert/export/download/generate/
+  /// make/create/save) anywhere in the message, which is far harder to
+  /// accidentally miss:
+  ///
+  /// - "Strong" verbs (bana*, de do, convert, export, download, generate)
+  ///   trigger export even inside a sentence shaped like a question, since
+  ///   none of them realistically show up in a genuine question about the
+  ///   PDF *format* itself.
+  /// - "Weak" verbs (make, create, save) are common in genuine questions
+  ///   too ("How do I **create** a PDF?"), so they only trigger when the
+  ///   message isn't phrased as that kind of question (doesn't open with
+  ///   what/how/why/explain/etc.).
+  PdfExportScope? _detectPdfExportIntent(String rawText) {
+    final t = _normalizeForPdfIntent(rawText);
+    if (_kDebugPdfIntent) debugPrint('PDF_INTENT_CHECK: $t');
+
+    if (!RegExp(r'\bpdf\b').hasMatch(t)) {
+      if (_kDebugPdfIntent) debugPrint('PDF_INTENT_RESULT: false (no "pdf")');
+      return null;
+    }
+
+    final hasStrongVerb = RegExp(
+      r'\bbana\w*|\bbnado\b|\bde\s*do\b|\bdedo\b|\bconvert\b|\bexport\b|'
+      r'\bdownload\b|\bgenerate\b|\bkar\s*do\b|\bkardo\b',
+    ).hasMatch(t);
+    final hasWeakVerb = RegExp(r'\b(make|create|save)\b').hasMatch(t);
+    final isQuestionAboutPdf = RegExp(
+      r'^(what|whats|how|why|when|where|which|who|explain|define|tell me)\b',
+    ).hasMatch(t);
+
+    final triggered = hasStrongVerb || (hasWeakVerb && !isQuestionAboutPdf);
+    if (_kDebugPdfIntent) {
+      debugPrint(
+        'PDF_INTENT_RESULT: $triggered (strongVerb=$hasStrongVerb '
+        'weakVerb=$hasWeakVerb questionOpener=$isQuestionAboutPdf)',
+      );
+    }
+    if (!triggered) return null;
 
     const fullConversationCues = [
       'poori chat', 'puri chat', 'saari chat', 'sari chat',
       'whole conversation', 'entire conversation', 'complete conversation',
       'this whole conversation', 'full conversation',
     ];
-    if (fullConversationCues.any(t.contains)) {
+    if (fullConversationCues.any(t.contains) ||
+        RegExp(r'\bchat\b|\bconversation\b').hasMatch(t)) {
       return PdfExportScope.fullConversation;
     }
 
     const allQaCues = [
-      'in sab', 'yeh sab', 'in sawalat', 'sab sawal', 'sab questions',
-      'these questions and answers', 'all questions', 'multiple',
-      'sab qa', 'sab q/a', 'sab q&a',
+      'in sab', 'yeh sab', 'sab sawal', 'sab questions', 'all questions',
+      'multiple', 'sab qa', 'all qa', 'these qa',
     ];
     if (allQaCues.any(t.contains)) return PdfExportScope.allQa;
 
@@ -1202,6 +1253,12 @@ class _ChatScreenState extends State<ChatScreen> {
     final pairs = scope == PdfExportScope.currentQa && allPairs.isNotEmpty
         ? [allPairs.last]
         : allPairs;
+    if (_kDebugPdfIntent) {
+      debugPrint(
+        'PDF_INTENT_RESULT: export scope=$scope priorPairs=${allPairs.length} '
+        'selectedPairs=${pairs.length}',
+      );
+    }
 
     try {
       final result = await PdfExportService.generate(pairs: pairs, scope: scope);
