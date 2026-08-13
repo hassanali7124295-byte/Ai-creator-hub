@@ -5,9 +5,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../core/services/document_intelligence_service.dart';
+import '../core/services/pdf_export_service.dart';
 import '../models/chat_message.dart';
 import 'attachment_preview.dart';
 import 'document_result_card.dart';
+import 'pdf_export_result_card.dart';
 
 /// A single chat bubble, aligned right (user) or left (AI), with distinct
 /// colors, Markdown rendering for AI replies, an error state for failed
@@ -383,6 +385,16 @@ class _ChatBubbleState extends State<ChatBubble> {
                   DocumentResultCard(
                     result: DocumentIntelligenceResult.fromJson(
                       message.documentResult!,
+                    ),
+                  )
+                // Step 56: an AI Q&A PDF export renders as a compact
+                // "📄 PDF Ready" card instead of the plain Markdown body —
+                // exactly the same additive pattern as documentResult
+                // above, just for a different structured result type.
+                else if (isAiReply && message.pdfExportResult != null)
+                  PdfExportResultCard(
+                    result: PdfExportResult.fromJson(
+                      message.pdfExportResult!,
                     ),
                   )
                 // AI replies render as Markdown (bold, lists, code blocks,

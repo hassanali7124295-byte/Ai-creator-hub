@@ -1,223 +1,259 @@
 import 'dart:io';
+import 'dart:ui' show Rect, Offset;
 
-import 'package:flutter/services.dart' show rootBundle;
 import 'package:path_provider/path_provider.dart';
-import 'package:pdf/pdf.dart';
-import 'package:pdf/widgets.dart' as pw;
-import 'package:printing/printing.dart';
+import 'package:syncfusion_flutter_pdf/pdf.dart';
 
-/// Step 50 — Local PDF Generator.
+/// STEP 56 — AI Q&A → PDF Export Feature.
 ///
-/// Generates a Pak-AI-branded PDF entirely on the device: no paid API, no
-/// cloud PDF service, no upload of any kind, and — as of this fix — no
-/// runtime network request of any kind, including for fonts. The `pdf`
-/// package renders the bytes locally and the result is written straight
-/// into this app's own document directory.
-///
-/// --- Urdu / Sindhi / RTL note --------------------------------------
-/// Correct Urdu and Sindhi glyph shaping needs a Unicode Arabic-script
-/// font. [_loadArabicFont] loads that font from exactly one place: the
-/// bundled asset at [_bundledArabicFontAsset] — fully offline, no
-/// network call, ever. There is deliberately no `PdfGoogleFonts`
-/// network-fetch fallback (an earlier draft of this feature had one;
-/// it was removed because "fetch it from Google's servers the first
-/// time it's needed" is still a runtime network request, which the
-/// brief for this fix explicitly disallows even as a one-time/cached
-/// fallback).
-///
-/// If the asset can't be loaded (e.g. a maintainer hasn't added the
-/// real font file yet — see `assets/fonts/README.md`), the PDF is still
-/// generated rather than failing outright: English/Roman Urdu content
-/// renders normally, and a short printed notice explains that Urdu/
-/// Sindhi glyphs could not be shown, instead of silently producing a
-/// PDF with mangled or missing text.
+/// Generates a Pak AI–branded PDF entirely on-device from already-available
+/// chat text, using the `syncfusion_flutter_pdf` package the project already
+/// depends on for the existing PDF *reading*/extraction feature (Step 22A,
+/// see `attachment_processor_service.dart`). No new package was added for
+/// this — Syncfusion's PDF library can both read and *write* PDFs, so the
+/// existing dependency is reused as-is. No network calls, no paid API.
+
+/// Which slice of the conversation a PDF export request covers, decided
+/// purely from the user's own phrasing (see `_detectPdfExportIntent` in
+/// `chat_screen.dart`). Only affects the title line and how many Q&A pairs
+/// are gathered before calling [PdfExportService.generate] — the PDF layout
+/// itself is identical either way.
+enum PdfExportScope { currentQa, allQa, fullConversation }
+
+/// A single Question/Answer pair to render as one block in the PDF.
+class PdfQaPair {
+  final String question;
+  final String answer;
+
+  const PdfQaPair({required this.question, required this.answer});
+}
+
+/// Thrown for any failure during PDF export — always carries an already
+/// user-friendly message (never a raw exception string), so call sites can
+/// show `e.message` directly in a chat bubble.
+class PdfExportException implements Exception {
+  final String message;
+  const PdfExportException(this.message);
+
+  @override
+  String toString() => message;
+}
+
+/// The result of a successful export — enough for the chat UI to render a
+/// "📄 PDF Ready" card and for `Share.shareXFiles` to open/share the file.
+class PdfExportResult {
+  final String filePath;
+  final String fileName;
+  final int pairCount;
+  final PdfExportScope scope;
+
+  const PdfExportResult({
+    required this.filePath,
+    required this.fileName,
+    required this.pairCount,
+    required this.scope,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'filePath': filePath,
+        'fileName': fileName,
+        'pairCount': pairCount,
+        'scope': scope.name,
+      };
+
+  factory PdfExportResult.fromJson(Map<String, dynamic> json) =>
+      PdfExportResult(
+        filePath: json['filePath'] as String,
+        fileName: json['fileName'] as String,
+        pairCount: json['pairCount'] as int? ?? 0,
+        scope: PdfExportScope.values.firstWhere(
+          (s) => s.name == json['scope'],
+          orElse: () => PdfExportScope.currentQa,
+        ),
+      );
+}
+
 class PdfExportService {
   PdfExportService._();
 
-  static const String _bundledArabicFontAsset =
-      'assets/fonts/NotoNaskhArabic-Regular.ttf';
+  // Matches ChatPalette.emeraldLight (0xFF10B981) — this file intentionally
+  // doesn't import the widget-layer ChatPalette (this is a plain Dart
+  // service, no Flutter/material dependency), so the RGB triplet is
+  // duplicated here as a plain constant instead.
+  static const int _accentR = 16;
+  static const int _accentG = 185;
+  static const int _accentB = 129;
 
-  static final RegExp _arabicScriptRange = RegExp(
-    r'[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]',
-  );
-
-  /// True if [text] contains any Urdu/Sindhi/Arabic-script characters.
-  static bool containsUrduOrArabic(String text) =>
-      _arabicScriptRange.hasMatch(text);
-
-  /// Loads the bundled Unicode Arabic-script font asset. Fully offline —
-  /// this is the *only* font source this feature ever uses; there is no
-  /// network fallback of any kind. Returns `null` (never throws) if the
-  /// asset is missing or fails to parse, so callers can fall back to a
-  /// Latin-only PDF plus an honest on-page notice instead of crashing.
-  static Future<pw.Font?> _loadArabicFont() async {
-    try {
-      // Throws if the asset isn't bundled — caught below.
-      await rootBundle.load(_bundledArabicFontAsset);
-      return await fontFromAssetBundle(_bundledArabicFontAsset);
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// Builds and saves the PDF, returning the local [File] it was written
-  /// to. [question] is only rendered (as a "Q:"/"A:" pair) when non-null
-  /// and non-empty — plain text/notes/conversation exports pass `null`.
-  static Future<File> generate({
-    required String title,
-    String? question,
-    required String body,
+  /// Builds a real, selectable-text PDF from [pairs] and saves it inside the
+  /// app's own documents directory (`<app docs>/pak_ai_exports/`) — no
+  /// public-Downloads/MediaStore write is attempted, since that's the
+  /// unreliable part under modern Android scoped storage; the chat UI's
+  /// "Open / Share" action (see `PdfExportResultCard`) hands the saved file
+  /// to the OS share sheet instead, which lets the person save it wherever
+  /// they like (Drive, Files, a PDF viewer's own "Save a copy", etc.) — the
+  /// safest supported flow given the existing project has no MediaStore/
+  /// file-picker-save plugin.
+  ///
+  /// Throws [PdfExportException] with an already user-friendly message on
+  /// any failure — empty input, a generation error, or a file-system error.
+  static Future<PdfExportResult> generate({
+    required List<PdfQaPair> pairs,
+    required PdfExportScope scope,
   }) async {
-    final needsUrdu = containsUrduOrArabic(body) ||
-        containsUrduOrArabic(question ?? '') ||
-        containsUrduOrArabic(title);
+    final cleanPairs = pairs
+        .where((p) => p.question.trim().isNotEmpty && p.answer.trim().isNotEmpty)
+        .toList(growable: false);
 
-    final arabicFont = needsUrdu ? await _loadArabicFont() : null;
-
-    final theme = pw.ThemeData.withFont(
-      base: pw.Font.helvetica(),
-      bold: pw.Font.helveticaBold(),
-      fontFallback: arabicFont != null ? [arabicFont] : const [],
-    );
-
-    final direction =
-        needsUrdu && arabicFont != null ? pw.TextDirection.rtl : pw.TextDirection.ltr;
-    final textAlign = direction == pw.TextDirection.rtl
-        ? pw.TextAlign.right
-        : pw.TextAlign.left;
-
-    final now = DateTime.now();
-    final dateStr = '${now.day.toString().padLeft(2, '0')}/'
-        '${now.month.toString().padLeft(2, '0')}/${now.year}';
-
-    final doc = pw.Document();
-    doc.addPage(
-      pw.MultiPage(
-        theme: theme,
-        margin: const pw.EdgeInsets.symmetric(horizontal: 32, vertical: 40),
-        header: (context) => pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.start,
-          children: [
-            pw.Row(
-              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-              children: [
-                pw.Text(
-                  'Pak AI',
-                  style: pw.TextStyle(
-                    fontSize: 13,
-                    fontWeight: pw.FontWeight.bold,
-                    color: PdfColor.fromHex('#0B7A57'),
-                  ),
-                ),
-                pw.Text(
-                  dateStr,
-                  style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey600),
-                ),
-              ],
-            ),
-            pw.SizedBox(height: 6),
-            pw.Divider(color: PdfColors.grey400, thickness: 0.6),
-          ],
-        ),
-        footer: (context) => pw.Align(
-          alignment: pw.Alignment.centerRight,
-          child: pw.Text(
-            'Page ${context.pageNumber} of ${context.pagesCount}',
-            style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey600),
-          ),
-        ),
-        build: (context) => [
-          pw.SizedBox(height: 10),
-          pw.Text(
-            title,
-            textDirection: direction,
-            textAlign: textAlign,
-            style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold),
-          ),
-          pw.SizedBox(height: 16),
-          if (question != null && question.trim().isNotEmpty) ...[
-            pw.Text(
-              'Q:',
-              style: pw.TextStyle(
-                fontSize: 12,
-                fontWeight: pw.FontWeight.bold,
-                color: PdfColors.grey700,
-              ),
-            ),
-            pw.SizedBox(height: 4),
-            pw.Text(
-              question.trim(),
-              textDirection: direction,
-              textAlign: textAlign,
-              style: const pw.TextStyle(fontSize: 12.5, lineSpacing: 3),
-            ),
-            pw.SizedBox(height: 16),
-            pw.Text(
-              'A:',
-              style: pw.TextStyle(
-                fontSize: 12,
-                fontWeight: pw.FontWeight.bold,
-                color: PdfColors.grey700,
-              ),
-            ),
-            pw.SizedBox(height: 4),
-          ],
-          pw.Text(
-            body.trim(),
-            textDirection: direction,
-            textAlign: textAlign,
-            style: const pw.TextStyle(fontSize: 12.5, lineSpacing: 3),
-          ),
-          if (needsUrdu && arabicFont == null)
-            pw.Padding(
-              padding: const pw.EdgeInsets.only(top: 24),
-              child: pw.Text(
-                'Note: an Urdu/Sindhi-capable font asset was not found in '
-                'this build, so some Urdu or Sindhi characters above may '
-                'not display correctly. This does not use the network — '
-                'see assets/fonts/README.md to add the font file.',
-                style: pw.TextStyle(
-                  fontSize: 9,
-                  color: PdfColors.red700,
-                  fontStyle: pw.FontStyle.italic,
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-
-    final bytes = await doc.save();
-
-    // App-specific document storage — no special Android storage
-    // permission needed for this, and it isn't cleared like a temp/cache
-    // directory would be.
-    final docsDir = await getApplicationDocumentsDirectory();
-    final pdfDir = Directory('${docsDir.path}/pak_ai_pdfs');
-    if (!await pdfDir.exists()) {
-      await pdfDir.create(recursive: true);
+    if (cleanPairs.isEmpty) {
+      throw const PdfExportException(
+        "There's no conversation yet to turn into a PDF — ask me something "
+        'first, then try again.',
+      );
     }
-    final fileName = 'PakAI_${now.millisecondsSinceEpoch}.pdf';
-    final file = File('${pdfDir.path}/$fileName');
-    await file.writeAsBytes(bytes, flush: true);
-    return file;
-  }
 
-  /// Opens [path] using the printing package's built-in preview (which in
-  /// turn offers the device's normal "Open with…"/print/share actions) —
-  /// entirely local, the bytes never leave the device except through
-  /// whichever app the user explicitly picks.
-  static Future<void> open(String path) async {
-    final bytes = await File(path).readAsBytes();
-    await Printing.layoutPdf(
-      onLayout: (_) async => bytes,
-      name: path.split(Platform.pathSeparator).last,
-    );
-  }
+    PdfDocument? document;
+    try {
+      document = PdfDocument();
+      document.pageSettings.size = PdfPageSize.a4;
+      document.pageSettings.margins.all = 40;
 
-  /// Shares [path] via Android's normal share sheet.
-  static Future<void> share(String path, String fileName) async {
-    final bytes = await File(path).readAsBytes();
-    await Printing.sharePdf(bytes: bytes, filename: fileName);
+      final accent = PdfColor(_accentR, _accentG, _accentB);
+      final muted = PdfColor(120, 120, 120);
+      final divider = PdfColor(225, 225, 225);
+
+      final titleFont =
+          PdfStandardFont(PdfFontFamily.helvetica, 22, style: PdfFontStyle.bold);
+      final subtitleFont =
+          PdfStandardFont(PdfFontFamily.helvetica, 12, style: PdfFontStyle.italic);
+      final labelFont =
+          PdfStandardFont(PdfFontFamily.helvetica, 12, style: PdfFontStyle.bold);
+      final bodyFont = PdfStandardFont(PdfFontFamily.helvetica, 11.5);
+
+      PdfPage page = document.pages.add();
+      final pageWidth = page.getClientSize().width;
+      final pageHeight = page.getClientSize().height;
+      final format = PdfLayoutFormat(layoutType: PdfLayoutType.paginate);
+
+      PdfLayoutResult result = PdfTextElement(
+        text: 'Pak AI',
+        font: titleFont,
+        brush: PdfSolidBrush(accent),
+      ).draw(
+        page: page,
+        bounds: Rect.fromLTWH(0, 0, pageWidth, pageHeight),
+      )!;
+
+      final subtitle = switch (scope) {
+        PdfExportScope.fullConversation => 'Complete Conversation Export',
+        PdfExportScope.allQa => 'AI Conversation / Q&A',
+        PdfExportScope.currentQa => 'AI Conversation / Q&A',
+      };
+      result = PdfTextElement(
+        text: subtitle,
+        font: subtitleFont,
+        brush: PdfSolidBrush(muted),
+      ).draw(
+        page: result.page,
+        bounds: Rect.fromLTWH(0, result.bounds.bottom + 2, pageWidth, pageHeight),
+      )!;
+
+      PdfPage currentPage = result.page;
+      double currentY = result.bounds.bottom + 10;
+      currentPage.graphics.drawLine(
+        PdfPen(divider, width: 0.75),
+        Offset(0, currentY),
+        Offset(pageWidth, currentY),
+      );
+      currentY += 16;
+
+      for (var i = 0; i < cleanPairs.length; i++) {
+        final pair = cleanPairs[i];
+
+        final qLabel = PdfTextElement(
+          text: 'Question',
+          font: labelFont,
+          brush: PdfSolidBrush(accent),
+        ).draw(
+          page: currentPage,
+          bounds: Rect.fromLTWH(0, currentY, pageWidth, pageHeight),
+          format: format,
+        )!;
+        currentPage = qLabel.page;
+        currentY = qLabel.bounds.bottom + 3;
+
+        final qBody = PdfTextElement(
+          text: pair.question.trim(),
+          font: bodyFont,
+        ).draw(
+          page: currentPage,
+          bounds: Rect.fromLTWH(0, currentY, pageWidth, pageHeight),
+          format: format,
+        )!;
+        currentPage = qBody.page;
+        currentY = qBody.bounds.bottom + 12;
+
+        final aLabel = PdfTextElement(
+          text: 'Answer',
+          font: labelFont,
+          brush: PdfSolidBrush(accent),
+        ).draw(
+          page: currentPage,
+          bounds: Rect.fromLTWH(0, currentY, pageWidth, pageHeight),
+          format: format,
+        )!;
+        currentPage = aLabel.page;
+        currentY = aLabel.bounds.bottom + 3;
+
+        final aBody = PdfTextElement(
+          text: pair.answer.trim(),
+          font: bodyFont,
+        ).draw(
+          page: currentPage,
+          bounds: Rect.fromLTWH(0, currentY, pageWidth, pageHeight),
+          format: format,
+        )!;
+        currentPage = aBody.page;
+        currentY = aBody.bounds.bottom + 22;
+
+        if (i != cleanPairs.length - 1) {
+          // A fresh page after the last draw leaves currentY near the top —
+          // skip the divider in that case so it doesn't sit right under
+          // the margin with nothing above it.
+          if (currentY < pageHeight - 60) {
+            currentPage.graphics.drawLine(
+              PdfPen(divider, width: 0.5),
+              Offset(0, currentY - 10),
+              Offset(pageWidth, currentY - 10),
+            );
+          }
+        }
+      }
+
+      final bytes = await document.save();
+
+      final docsDir = await getApplicationDocumentsDirectory();
+      final exportsDir = Directory('${docsDir.path}/pak_ai_exports');
+      if (!await exportsDir.exists()) {
+        await exportsDir.create(recursive: true);
+      }
+      final fileName = 'PakAI_QA_${DateTime.now().millisecondsSinceEpoch}.pdf';
+      final file = File('${exportsDir.path}/$fileName');
+      await file.writeAsBytes(bytes, flush: true);
+
+      return PdfExportResult(
+        filePath: file.path,
+        fileName: fileName,
+        pairCount: cleanPairs.length,
+        scope: scope,
+      );
+    } on PdfExportException {
+      rethrow;
+    } catch (_) {
+      throw const PdfExportException(
+        "Sorry, I couldn't create the PDF. Please try again.",
+      );
+    } finally {
+      document?.dispose();
+    }
   }
 }

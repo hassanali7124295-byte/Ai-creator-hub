@@ -39,6 +39,9 @@ dependencies:
   # Step 22A: on-device PDF text extraction for the "PDF attachment" flow —
   # pure-Dart (no native/platform code, no manifest changes), used only for
   # `PdfDocument` + `PdfTextExtractor`.
+  # Step 56: also reused (no new package added) to *write* PDFs for the new
+  # AI Q&A -> PDF export feature — `PdfDocument`/`PdfPage`/`PdfTextElement`
+  # from this same package. See `pdf_export_service.dart`.
   syncfusion_flutter_pdf: ^24.1.41
 
   # Chat UI actions (Step 10): Share and Read Aloud on AI responses.

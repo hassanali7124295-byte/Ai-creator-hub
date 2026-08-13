@@ -16,6 +16,7 @@ import '../core/services/attachment_processor_service.dart';
 import '../core/services/attachment_service.dart';
 import '../core/services/document_intelligence_service.dart';
 import '../core/services/gemini_service.dart';
+import '../core/services/pdf_export_service.dart';
 import '../core/services/text_recognition_service.dart';
 import '../core/services/tts_voice_service.dart';
 import '../core/services/voice_playback_service.dart';
@@ -787,6 +788,23 @@ class _ChatScreenState extends State<ChatScreen> {
     // non-streaming path below — merging several image batches into one
     // answer doesn't map onto a single token stream.
     if (attachmentsToSend.isEmpty) {
+      // Step 56 — AI Q&A → PDF Export Feature: a plain-text request to turn
+      // the conversation (or its most recent Q&A) into a PDF is handled
+      // entirely locally — no Gemini call at all, matching the "must work
+      // free/local" requirement. Checked first, before the document
+      // follow-up/streaming flow below, using only the message just added
+      // to `_messages` (excluding it from the pairs gathered) plus
+      // whatever came before it.
+      final pdfScope = _detectPdfExportIntent(outgoingText);
+      if (pdfScope != null) {
+        setState(() {
+          _isSending = false; // handed off to _runPdfExport
+          _sendingHasImages = false;
+          _sendStage = null;
+        });
+        await _runPdfExport(pdfScope);
+        return;
+      }
       // Step 40 (Part 5): a plain-text follow-up that clearly references
       // the most recently analyzed document is answered by that same
       // grounded Q&A instead of the normal chat flow — no re-selecting
@@ -1100,6 +1118,131 @@ class _ChatScreenState extends State<ChatScreen> {
     if (isExplanation) return _SmartIntent.documentExplanation;
     if (isDocIntel) return _SmartIntent.documentIntel;
     return _SmartIntent.none;
+  }
+
+  // ---------------------------------------------------------------------
+  // Step 56 — AI Q&A → PDF Export Feature
+  // ---------------------------------------------------------------------
+
+  /// Local, keyword-based detection of a "turn this into a PDF" request —
+  /// same zero-Gemini-call philosophy as `_detectSmartIntent` above, just
+  /// for plain-text (no-attachment) turns. Returns `null` for anything
+  /// ambiguous, including a genuine question *about* PDFs ("What is a
+  /// PDF?", "PDF kya hota hai?") — those fall straight through to the
+  /// normal chat flow, unchanged, because they contain no export/action
+  /// cue below.
+  PdfExportScope? _detectPdfExportIntent(String text) {
+    final t = text.toLowerCase().trim();
+    if (!RegExp(r'\bpdf\b').hasMatch(t)) return null;
+
+    const actionCues = [
+      'bana do', 'bana den', 'bana dein', 'banado', 'bnado', 'bna do',
+      'bana dijiye', 'bana kar do', 'bana kar den', 'bana k do',
+      'mein bana', 'mein de do', 'mein daal do', 'mein convert',
+      'convert', 'download', 'export', 'generate',
+      'create a pdf', 'create pdf', 'make a pdf', 'make pdf',
+      'make this a pdf', 'make these a pdf', 'save as pdf', 'save this as pdf',
+      'pdf bana', 'pdf mein de', 'de do',
+    ];
+    final hasActionCue = actionCues.any(t.contains);
+    if (!hasActionCue) return null;
+
+    const fullConversationCues = [
+      'poori chat', 'puri chat', 'saari chat', 'sari chat',
+      'whole conversation', 'entire conversation', 'complete conversation',
+      'this whole conversation', 'full conversation',
+    ];
+    if (fullConversationCues.any(t.contains)) {
+      return PdfExportScope.fullConversation;
+    }
+
+    const allQaCues = [
+      'in sab', 'yeh sab', 'in sawalat', 'sab sawal', 'sab questions',
+      'these questions and answers', 'all questions', 'multiple',
+      'sab qa', 'sab q/a', 'sab q&a',
+    ];
+    if (allQaCues.any(t.contains)) return PdfExportScope.allQa;
+
+    return PdfExportScope.currentQa;
+  }
+
+  /// Pulls Q&A pairs out of [messages] — consecutive (user, then a
+  /// non-error AI reply) turns, in order. Used for both `currentQa` (last
+  /// pair only) and `allQa`/`fullConversation` (every pair) — the PDF
+  /// layout itself doesn't otherwise distinguish the three scopes. Skips
+  /// any turn missing its other half (e.g. a still-in-flight or failed
+  /// reply) rather than guessing.
+  List<PdfQaPair> _extractQaPairs(List<ChatMessage> messages) {
+    final pairs = <PdfQaPair>[];
+    for (var i = 0; i < messages.length - 1; i++) {
+      final user = messages[i];
+      final reply = messages[i + 1];
+      if (user.isUser &&
+          !user.isError &&
+          !reply.isUser &&
+          !reply.isError &&
+          user.text.trim().isNotEmpty &&
+          reply.text.trim().isNotEmpty) {
+        pairs.add(PdfQaPair(question: user.text.trim(), answer: reply.text.trim()));
+      }
+    }
+    return pairs;
+  }
+
+  /// Generates and inserts a PDF export result for [scope], entirely
+  /// on-device (see `PdfExportService`) — no network call. The user's
+  /// trigger message ("PDF bana do" etc.) was already appended to
+  /// `_messages` by the caller, so it's excluded here via `sublist` before
+  /// gathering Q&A pairs from what came before it.
+  Future<void> _runPdfExport(PdfExportScope scope) async {
+    final priorMessages = _messages.length > 1
+        ? _messages.sublist(0, _messages.length - 1)
+        : const <ChatMessage>[];
+    final allPairs = _extractQaPairs(priorMessages);
+    final pairs = scope == PdfExportScope.currentQa && allPairs.isNotEmpty
+        ? [allPairs.last]
+        : allPairs;
+
+    try {
+      final result = await PdfExportService.generate(pairs: pairs, scope: scope);
+      if (!mounted) return;
+      final summaryText = 'PDF Ready — ${result.fileName} '
+          '(${result.pairCount} Q&A)';
+      setState(() {
+        _messages.add(ChatMessage(
+          text: summaryText,
+          isUser: false,
+          pdfExportResult: result.toJson(),
+        ));
+        if (!_followBottom) _newContentWhilePaused = true;
+      });
+    } on PdfExportException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _messages.add(ChatMessage(text: e.message, isUser: false, isError: true));
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _messages.add(
+          ChatMessage(
+            text: "Sorry, I couldn't create the PDF. Please try again.",
+            isUser: false,
+            isError: true,
+          ),
+        );
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSending = false;
+          _sendingHasImages = false;
+          _sendStage = null;
+        });
+      }
+      _scrollToBottom();
+      unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
+    }
   }
 
   /// Step 42 — pulls a requested question/MCQ count out of phrasing like

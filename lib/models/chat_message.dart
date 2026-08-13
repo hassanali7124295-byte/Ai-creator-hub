@@ -20,6 +20,16 @@ class ChatMessage {
   /// normal text).
   final Map<String, dynamic>? documentResult;
 
+  /// STEP 56 — AI Q&A → PDF Export Feature: an optional, already-serialized
+  /// `PdfExportResult` (see `PdfExportResult.toJson`/`.fromJson` in
+  /// `pdf_export_service.dart`) attached to an assistant message. When
+  /// present, `ChatBubble` renders a compact "📄 PDF Ready" card
+  /// (`PdfExportResultCard`) instead of the plain Markdown body — exactly
+  /// the same pattern as `documentResult` above. [text] still holds a
+  /// short plain-text summary for copy/share/history. `null` for every
+  /// other message.
+  final Map<String, dynamic>? pdfExportResult;
+
   ChatMessage({
     required this.text,
     required this.isUser,
@@ -27,6 +37,7 @@ class ChatMessage {
     this.isError = false,
     this.attachments = const [],
     this.documentResult,
+    this.pdfExportResult,
   }) : timestamp = timestamp ?? DateTime.now();
 
   Map<String, dynamic> toJson() => {
@@ -37,6 +48,7 @@ class ChatMessage {
         if (attachments.isNotEmpty)
           'attachments': attachments.map((a) => a.toJson()).toList(),
         if (documentResult != null) 'documentResult': documentResult,
+        if (pdfExportResult != null) 'pdfExportResult': pdfExportResult,
       };
 
   // `attachments` is a new field as of Step 9 — history saved by earlier
@@ -56,5 +68,6 @@ class ChatMessage {
                 .toList() ??
             const [],
         documentResult: json['documentResult'] as Map<String, dynamic>?,
+        pdfExportResult: json['pdfExportResult'] as Map<String, dynamic>?,
       );
 }
