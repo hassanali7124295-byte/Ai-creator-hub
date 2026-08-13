@@ -90,22 +90,24 @@ enum _SmartIntent {
 const int _kMaxImagesPerRequest = 20;
 const int _kMaxPdfsPerRequest = 1;
 
-/// Step 27C — Final Home UI Polish: the fixed "premium light" palette used
-/// only by the Home (empty-chat) presentational widgets below — greeting,
-/// quick-action list, mode pill, and background. Deliberately a plain set
-/// of literal colors (not theme-derived) so Home always reads the same
-/// clean, minimal way regardless of the app's light/dark theme; nothing
-/// outside the Home state reads from this class, so chat bubbles,
-/// streaming, and every other screen keep using the existing adaptive
-/// theme untouched.
+/// Step 27C — Home UI palette used by the Home (empty-chat) presentational
+/// widgets below — greeting, quick-action list, mode pill, and background.
+///
+/// Step 55 fix: `background`/`text`/`secondaryText`/`card`/`border` used to
+/// be plain literal colors, which is why they stayed light even when Dark
+/// Mode was on (the rest of the app, incl. Settings, already reads from
+/// `Theme.of(context).colorScheme`). They're now derived from the active
+/// `ColorScheme` so Home follows Dark Mode like every other screen. Only
+/// `emerald` stays a fixed brand accent — it already read correctly against
+/// both light and dark surfaces in the reference screenshots.
 class _PakHome {
   _PakHome._();
-  static const Color background = Color(0xFFF8F8F5);
   static const Color emerald = Color(0xFF0B7A57);
-  static const Color text = Color(0xFF111827);
-  static const Color secondaryText = Color(0xFF6B7280);
-  static const Color card = Colors.white;
-  static const Color border = Color(0xFFE5E7EB);
+  static Color background(ColorScheme scheme) => scheme.surface;
+  static Color text(ColorScheme scheme) => scheme.onSurface;
+  static Color secondaryText(ColorScheme scheme) => scheme.onSurfaceVariant;
+  static Color card(ColorScheme scheme) => scheme.surfaceContainerHigh;
+  static Color border(ColorScheme scheme) => scheme.outlineVariant;
 }
 
 /// Step 23: a second, more aggressive compression pass applied to every
@@ -3207,6 +3209,7 @@ class _ModePillState extends State<_ModePill> {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return GestureDetector(
       onTapDown: (_) => _setPressed(true),
       onTapCancel: () => _setPressed(false),
@@ -3231,7 +3234,7 @@ class _ModePillState extends State<_ModePill> {
             ],
           ),
           child: Material(
-            color: _PakHome.border.withOpacity(0.65),
+            color: _PakHome.card(scheme),
             borderRadius: BorderRadius.circular(22),
             child: InkWell(
               borderRadius: BorderRadius.circular(22),
@@ -3254,14 +3257,14 @@ class _ModePillState extends State<_ModePill> {
                       style: GoogleFonts.poppins(
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
-                        color: _PakHome.text,
+                        color: _PakHome.text(scheme),
                       ),
                     ),
                     const SizedBox(width: 2),
                     Icon(
                       Icons.expand_more_rounded,
                       size: 16,
-                      color: _PakHome.secondaryText,
+                      color: _PakHome.secondaryText(scheme),
                     ),
                   ],
                 ),
@@ -3349,6 +3352,7 @@ class _ApiKeyBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
       child: Container(
@@ -3376,7 +3380,7 @@ class _ApiKeyBanner extends StatelessWidget {
                 style: GoogleFonts.poppins(
                   fontSize: 12.5,
                   fontWeight: FontWeight.w500,
-                  color: _PakHome.text,
+                  color: _PakHome.text(scheme),
                 ),
               ),
             ),
@@ -3483,24 +3487,27 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Step 28 — Final Premium UI Refinement: fixed light palette (see
-    // `_PakHome`), a 24/16 spacing rhythm, and everything explicitly
-    // left-aligned (width: double.infinity + crossAxisAlignment.start +
-    // TextAlign.left) so nothing can ever collapse to content-width and
-    // read as centered. Chat bubbles, streaming, attachments, and routing
-    // are untouched — this widget only ever mounts on the empty
-    // conversation state.
+    // Step 28 — Final Premium UI Refinement: a 24/16 spacing rhythm, and
+    // everything explicitly left-aligned (width: double.infinity +
+    // crossAxisAlignment.start + TextAlign.left) so nothing can ever
+    // collapse to content-width and read as centered. Chat bubbles,
+    // streaming, attachments, and routing are untouched — this widget only
+    // ever mounts on the empty conversation state.
+    // Step 55 fix: background/text colors now come from `theme.colorScheme`
+    // (see `_PakHome`) instead of a fixed light palette, so Home follows
+    // Dark Mode like the rest of the app.
+    final scheme = theme.colorScheme;
     return DecoratedBox(
-      decoration: const BoxDecoration(color: _PakHome.background),
+      decoration: BoxDecoration(color: _PakHome.background(scheme)),
       child: Stack(
         children: [
-          // Light decorative map line — very subtle (~2% opacity), drawn
+          // Decorative map line — very subtle (~2% opacity), drawn
           // behind everything else so it can never interfere with text.
           Positioned.fill(
             child: IgnorePointer(
               child: CustomPaint(
                 painter: _PakOutlinePainter(
-                  color: _PakHome.text.withOpacity(0.02),
+                  color: _PakHome.text(scheme).withOpacity(0.02),
                 ),
               ),
             ),
@@ -3523,7 +3530,7 @@ class _EmptyState extends StatelessWidget {
                         fontWeight: FontWeight.w800,
                       height: 1.18,
                       letterSpacing: -0.2,
-                      color: _PakHome.text,
+                      color: _PakHome.text(scheme),
                     ),
                   ),
                 ),
@@ -3598,6 +3605,7 @@ class _QuickActionPillState extends State<_QuickActionPill> {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return GestureDetector(
       onTapDown: (_) => _setPressed(true),
       onTapCancel: () => _setPressed(false),
@@ -3622,13 +3630,14 @@ class _QuickActionPillState extends State<_QuickActionPill> {
             ],
           ),
           child: Material(
-            // "white / glass-like": a near-opaque white fill plus a
-            // hairline white-ish border reads as a soft glass pill against
-            // the app's light background, while staying fully legible.
-            color: _PakHome.card.withOpacity(0.94),
+            // Theme-aware "glass" pill: a near-opaque surface fill plus a
+            // hairline border derived from the active ColorScheme, so it
+            // reads as a soft glass pill against either a light or dark
+            // Home background while staying fully legible.
+            color: _PakHome.card(scheme).withOpacity(0.94),
             shape: StadiumBorder(
               side: BorderSide(
-                color: Colors.white.withOpacity(0.6),
+                color: _PakHome.border(scheme).withOpacity(0.6),
                 width: 1,
               ),
             ),
@@ -3668,7 +3677,7 @@ class _QuickActionPillState extends State<_QuickActionPill> {
                           fontSize: 13.5,
                           fontWeight: FontWeight.w600,
                           letterSpacing: -0.1,
-                          color: _PakHome.text,
+                          color: _PakHome.text(scheme),
                         ),
                       ),
                     ),
@@ -3917,6 +3926,17 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                   maxLines: 5,
                   textInputAction: TextInputAction.send,
                   onSubmitted: (_) => onSend(),
+                  // Step 55 fix: typed text had no explicit style, so it
+                  // fell back to the default TextTheme color — which (see
+                  // `app_theme.dart`) used to be a fixed dark color
+                  // regardless of theme, making typed text nearly invisible
+                  // against the dark input background. Now explicitly tied
+                  // to `colorScheme.onSurface`, matching Light Mode's
+                  // existing look and giving Dark Mode a correct light
+                  // color; cursor/selection already come from
+                  // `ChatPalette`'s `textSelectionTheme`.
+                  style: TextStyle(color: theme.colorScheme.onSurface),
+                  cursorColor: theme.colorScheme.primary,
                   decoration: InputDecoration(
                     hintText: 'Message Pak AI...',
                     hintStyle: TextStyle(

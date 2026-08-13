@@ -38,8 +38,25 @@ class AppTheme {
   }
 
   static ThemeData _buildTheme(ColorScheme colorScheme) {
-    final baseTextTheme = GoogleFonts.interTextTheme();
-    final headlineFont = GoogleFonts.poppinsTextTheme();
+    // Step 55 fix: `GoogleFonts.interTextTheme()`/`poppinsTextTheme()` called
+    // with no base TextTheme argument return a fixed, brightness-independent
+    // default (dark) text color. Every Text widget in the app that doesn't
+    // explicitly pass its own `color` (e.g. the drawer's nav labels, the
+    // drawer's "Pak AI" title) was silently inheriting that fixed dark
+    // color — invisible against a dark background. `.apply(bodyColor:,
+    // displayColor:)` re-derives every style's default color from this
+    // theme's own `colorScheme.onSurface`, so it stays dark-on-light in
+    // Light Mode (no visible change there) and becomes light-on-dark in
+    // Dark Mode. Widgets that already set an explicit `color:` (Settings,
+    // most of the app) are unaffected either way.
+    final baseTextTheme = GoogleFonts.interTextTheme().apply(
+      bodyColor: colorScheme.onSurface,
+      displayColor: colorScheme.onSurface,
+    );
+    final headlineFont = GoogleFonts.poppinsTextTheme().apply(
+      bodyColor: colorScheme.onSurface,
+      displayColor: colorScheme.onSurface,
+    );
 
     final textTheme = baseTextTheme.copyWith(
       headlineLarge: headlineFont.headlineLarge?.copyWith(
