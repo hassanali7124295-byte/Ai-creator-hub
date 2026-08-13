@@ -1124,25 +1124,29 @@ class _ChatScreenState extends State<ChatScreen> {
   // Step 56/57 — AI Q&A → PDF Export Feature
   // ---------------------------------------------------------------------
 
-  /// Step 57: temporary diagnostic logging for the PDF intent detector —
-  /// prints `PDF_INTENT_CHECK`/`PDF_INTENT_RESULT` lines so a real-device
-  /// test can confirm what the detector actually saw and decided. Safe to
-  /// leave on (it's a single `debugPrint` per plain-text send, stripped
-  /// entirely from release binaries by `debugPrint`'s own no-op-in-profile/
-  /// release behavior being irrelevant here since this is just a guarded
-  /// call) but flip to `false` — or delete the two `debugPrint` calls below
-  /// — once you've confirmed detection is working as expected.
+  /// Step 58: temporary diagnostic logging for the PDF intent detector —
+  /// prints exactly the `PDF_INTENT_INPUT` / `PDF_INTENT_DETECTED` /
+  /// `PDF_INTENT_ACTION` / `PDF_GEMINI_BYPASS` lines requested for this
+  /// step, so a real-device logcat can show definitively whether the
+  /// detector itself is firing or not — this is the fastest way to tell
+  /// "detector logic bug" apart from "this build doesn't contain this
+  /// code" (e.g. a stale/partial upload). Safe to leave on; flip to
+  /// `false` — or delete the `debugPrint` call sites below — once
+  /// confirmed working on-device.
   static const bool _kDebugPdfIntent = true;
 
-  /// Lowercases, trims, collapses whitespace, and folds the many ways
-  /// people write "Q&A" ("Q/A", "Q&A", "question answer(s)", "questions
-  /// and answers", "sawal jawab") down to one canonical `qa` token — so
-  /// every check below only has to consider a single spelling.
+  /// Lowercases, trims, collapses whitespace, folds dotted "p.d.f." to
+  /// "pdf", and folds the many ways people write "Q&A" ("Q/A", "Q&A",
+  /// "question answer(s)", "questions and answers", "questions answers",
+  /// "sawal jawab") down to one canonical `qa` token — so every check
+  /// below only has to consider a single spelling.
   String _normalizeForPdfIntent(String input) {
     var t = input.toLowerCase().trim();
     t = t.replaceAll(RegExp(r'\s+'), ' ');
+    t = t.replaceAll(RegExp(r'\bp\.\s*d\.\s*f\.?\b'), 'pdf');
     t = t.replaceAll(RegExp(r'\bq\s*[/&]\s*a\b'), 'qa');
     t = t.replaceAll(RegExp(r'\bquestions?\s+and\s+answers?\b'), 'qa');
+    t = t.replaceAll(RegExp(r'\bquestions?\s+answers?\b'), 'qa');
     t = t.replaceAll(RegExp(r'\bquestion\s+answer\b'), 'qa');
     t = t.replaceAll(RegExp(r'\bsawal\s+jawab\b'), 'qa');
     return t;
@@ -1152,49 +1156,76 @@ class _ChatScreenState extends State<ChatScreen> {
   /// zero-Gemini-call philosophy as `_detectSmartIntent` above, just for
   /// plain-text (no-attachment) turns.
   ///
-  /// Step 57 rewrite: the original Step 56 version matched against a fixed
-  /// list of exact multi-word phrases (`'make this a pdf'`, `'save this as
-  /// pdf'`, ...). That's brittle — real phrasing varies word-for-word
-  /// ("make this Q&A a PDF", "save this chat as PDF", "PDF mein de do"
-  /// none of which are literally in that list) and can silently fall
-  /// through to the normal Gemini flow instead of exporting. This version
-  /// instead looks for an actual *action verb* (Roman Urdu "bana"-stem
-  /// imperatives, "de do", or English convert/export/download/generate/
-  /// make/create/save) anywhere in the message, which is far harder to
-  /// accidentally miss:
-  ///
-  /// - "Strong" verbs (bana*, de do, convert, export, download, generate)
-  ///   trigger export even inside a sentence shaped like a question, since
-  ///   none of them realistically show up in a genuine question about the
-  ///   PDF *format* itself.
-  /// - "Weak" verbs (make, create, save) are common in genuine questions
-  ///   too ("How do I **create** a PDF?"), so they only trigger when the
-  ///   message isn't phrased as that kind of question (doesn't open with
-  ///   what/how/why/explain/etc.).
+  /// Step 58 audit: traced the full `_sendMessage()` flow end-to-end again
+  /// (see `CHANGE_REPORT_STEP58.md`) and confirmed this call — at the very
+  /// top of the `if (attachmentsToSend.isEmpty)` branch, ahead of the
+  /// document-follow-up check and the `_streamAiReply(...)` call that
+  /// talks to Gemini — already structurally guarantees a detected PDF
+  /// command never reaches Gemini; that part of Step 57 was correct.
+  /// What this step actually fixes is detector *precision*, in both
+  /// directions:
+  /// - Step 57's `\bbana\w*` was an open-ended wildcard: it matches the
+  ///   imperative "bana" fine, but it also matches conjugations that are
+  ///   NOT commands — "banate" (as in "PDF **kaise banate** hain?", a
+  ///   required FAIL case for this step) — because `\w*` doesn't care what
+  ///   comes after "bana". Replaced with an exact set of imperative forms
+  ///   (`bana`, `banao`, `banade`, `banado`, `banaden`, `banadein`,
+  ///   `bnado`, `bna`, `bnao`, `bnade`) so only real commands match.
+  /// - Step 57 also let English verbs like "export"/"convert" bypass the
+  ///   question-opener guard entirely, which is wrong for a bare noun use
+  ///   — "**What is PDF export**?" (another required FAIL case here)
+  ///   contains "export" but is asking about the feature, not commanding
+  ///   one. Every English verb now goes through the same question-opener
+  ///   guard as "make"/"create" did in Step 57; only the Roman Urdu
+  ///   imperatives (which don't realistically appear in a question at
+  ///   all) bypass it.
+  /// - Added the additional Roman Urdu forms this step explicitly
+  ///   requires that Step 57 didn't cover: bare `bna` (no vowel), `de
+  ///   dein`, `kr do`/`krdo` (short for `kar do`/`kardo`), and dotted
+  ///   `p.d.f.` (folded to `pdf` in normalization above).
   PdfExportScope? _detectPdfExportIntent(String rawText) {
     final t = _normalizeForPdfIntent(rawText);
-    if (_kDebugPdfIntent) debugPrint('PDF_INTENT_CHECK: $t');
+    if (_kDebugPdfIntent) debugPrint('PDF_INTENT_INPUT: $t');
 
     if (!RegExp(r'\bpdf\b').hasMatch(t)) {
-      if (_kDebugPdfIntent) debugPrint('PDF_INTENT_RESULT: false (no "pdf")');
+      if (_kDebugPdfIntent) {
+        debugPrint('PDF_INTENT_DETECTED: false');
+        debugPrint('PDF_GEMINI_BYPASS: false');
+      }
       return null;
     }
 
-    final hasStrongVerb = RegExp(
-      r'\bbana\w*|\bbnado\b|\bde\s*do\b|\bdedo\b|\bconvert\b|\bexport\b|'
-      r'\bdownload\b|\bgenerate\b|\bkar\s*do\b|\bkardo\b',
+    // Roman Urdu imperatives and imperative particles ("bana"/"bna"
+    // family, "de do", "kar do") are essentially unambiguous commands —
+    // they don't realistically occur in a genuine question about PDFs, so
+    // they trigger export regardless of how the rest of the sentence is
+    // shaped. The "bana" family is an exact set of imperative forms (not
+    // a `\w*` wildcard) so habitual/past/future conjugations like
+    // "banate"/"banaya"/"banega" — as in the required FAIL case "PDF
+    // kaise banate hain?" — are deliberately excluded.
+    final hasImperativeUrdu = RegExp(
+      r'\b(bana|banao|banade|banado|banaden|banadein|bnado|bna|bnao|bnade)\b|'
+      r'\bde\s*(do|dein|den)\b|\bdedo\b|'
+      r'\bkar\s*do\b|\bkr\s*do\b|\bkardo\b|\bkrdo\b',
     ).hasMatch(t);
-    final hasWeakVerb = RegExp(r'\b(make|create|save)\b').hasMatch(t);
+    // English verbs — "convert"/"export"/"download"/"generate"/"make"/
+    // "create"/"save" — are all common inside a genuine question *about*
+    // PDFs too ("What is PDF **export**?", "How do I **create** a PDF?"),
+    // so every one of them only counts when the message isn't phrased as
+    // that kind of question (doesn't open with what/how/why/explain/etc.).
+    final hasEnglishVerb =
+        RegExp(r'\b(convert|export|download|generate|make|create|save)\b')
+            .hasMatch(t);
     final isQuestionAboutPdf = RegExp(
       r'^(what|whats|how|why|when|where|which|who|explain|define|tell me)\b',
     ).hasMatch(t);
 
-    final triggered = hasStrongVerb || (hasWeakVerb && !isQuestionAboutPdf);
+    final triggered =
+        hasImperativeUrdu || (hasEnglishVerb && !isQuestionAboutPdf);
     if (_kDebugPdfIntent) {
-      debugPrint(
-        'PDF_INTENT_RESULT: $triggered (strongVerb=$hasStrongVerb '
-        'weakVerb=$hasWeakVerb questionOpener=$isQuestionAboutPdf)',
-      );
+      debugPrint('PDF_INTENT_DETECTED: $triggered');
+      if (triggered) debugPrint('PDF_INTENT_ACTION: export');
+      debugPrint('PDF_GEMINI_BYPASS: $triggered');
     }
     if (!triggered) return null;
 
@@ -1255,7 +1286,7 @@ class _ChatScreenState extends State<ChatScreen> {
         : allPairs;
     if (_kDebugPdfIntent) {
       debugPrint(
-        'PDF_INTENT_RESULT: export scope=$scope priorPairs=${allPairs.length} '
+        'PDF_INTENT_ACTION: generating scope=$scope priorPairs=${allPairs.length} '
         'selectedPairs=${pairs.length}',
       );
     }
