@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/theme/chat_palette.dart';
+import '../widgets/credit_card.dart';
 import 'about_screen.dart';
 import 'privacy_policy_screen.dart';
 import 'welcome_screen.dart';
@@ -158,6 +159,8 @@ class _ProfileScreenState extends State<ProfileScreen>
                         userEmail: _userEmail,
                         userPhotoUrl: _userPhotoUrl,
                       ),
+                      const SizedBox(height: 20),
+                      CreditCard(scheme: scheme),
                       const SizedBox(height: 28),
                       _SectionLabel('Account', color: scheme.primary),
                       _ProfileCard(

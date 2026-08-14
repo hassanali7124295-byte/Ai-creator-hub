@@ -4,7 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:animate_do/animate_do.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show compute, debugPrint;
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image/image.dart' as img;
@@ -14,9 +14,9 @@ import 'package:share_plus/share_plus.dart';
 import '../core/providers/conversation_provider.dart';
 import '../core/services/attachment_processor_service.dart';
 import '../core/services/attachment_service.dart';
+import '../core/services/credit_service.dart';
 import '../core/services/document_intelligence_service.dart';
 import '../core/services/gemini_service.dart';
-import '../core/services/pdf_export_service.dart';
 import '../core/services/text_recognition_service.dart';
 import '../core/services/tts_voice_service.dart';
 import '../core/services/voice_playback_service.dart';
@@ -30,6 +30,7 @@ import '../widgets/attachment_preview.dart';
 import '../widgets/attachment_sheet.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/conversation_drawer.dart';
+import '../widgets/credit_limit_sheet.dart';
 import '../widgets/document_source_sheet.dart' show showDocumentSourceSheet;
 import '../widgets/image_source_sheet.dart' show showImageSourceSheet;
 import '../widgets/pak_home_widgets.dart';
@@ -667,6 +668,28 @@ class _ChatScreenState extends State<ChatScreen> {
     final attachmentsToSend = List<_PendingAttachment>.from(_pendingAttachments);
     if ((text.isEmpty && attachmentsToSend.isEmpty) || _isSending) return;
 
+    // Step 56 — Pak AI Credits: a single centralized check-and-deduct call
+    // before anything else happens. Cost is calculated from the size of
+    // what's actually being sent (see CreditService.calculateCost) and
+    // deducted immediately if affordable; otherwise nothing is deducted,
+    // no Gemini request is made, and the credit-limit sheet is shown
+    // instead. Deliberately placed before attachment processing/locking
+    // so a blocked send doesn't touch the composer UI at all.
+    final creditText = text.isNotEmpty
+        ? text
+        : (attachmentsToSend.length > 1
+            ? 'What can you tell me about these attachments?'
+            : 'What can you tell me about this attachment?');
+    final hasCredits = await context.read<CreditService>().checkAndConsume(
+          text: creditText,
+          attachmentCount: attachmentsToSend.length,
+        );
+    if (!hasCredits) {
+      if (!mounted) return;
+      await showCreditLimitSheet(context);
+      return;
+    }
+
     final hasImages = attachmentsToSend
         .any((a) => a.previewMeta.kind == ChatAttachmentKind.image);
 
@@ -788,23 +811,6 @@ class _ChatScreenState extends State<ChatScreen> {
     // non-streaming path below — merging several image batches into one
     // answer doesn't map onto a single token stream.
     if (attachmentsToSend.isEmpty) {
-      // Step 56 — AI Q&A → PDF Export Feature: a plain-text request to turn
-      // the conversation (or its most recent Q&A) into a PDF is handled
-      // entirely locally — no Gemini call at all, matching the "must work
-      // free/local" requirement. Checked first, before the document
-      // follow-up/streaming flow below, using only the message just added
-      // to `_messages` (excluding it from the pairs gathered) plus
-      // whatever came before it.
-      final pdfScope = _detectPdfExportIntent(outgoingText);
-      if (pdfScope != null) {
-        setState(() {
-          _isSending = false; // handed off to _runPdfExport
-          _sendingHasImages = false;
-          _sendStage = null;
-        });
-        await _runPdfExport(pdfScope);
-        return;
-      }
       // Step 40 (Part 5): a plain-text follow-up that clearly references
       // the most recently analyzed document is answered by that same
       // grounded Q&A instead of the normal chat flow — no re-selecting
@@ -1118,226 +1124,6 @@ class _ChatScreenState extends State<ChatScreen> {
     if (isExplanation) return _SmartIntent.documentExplanation;
     if (isDocIntel) return _SmartIntent.documentIntel;
     return _SmartIntent.none;
-  }
-
-  // ---------------------------------------------------------------------
-  // Step 56/57 — AI Q&A → PDF Export Feature
-  // ---------------------------------------------------------------------
-
-  /// Step 58: temporary diagnostic logging for the PDF intent detector —
-  /// prints exactly the `PDF_INTENT_INPUT` / `PDF_INTENT_DETECTED` /
-  /// `PDF_INTENT_ACTION` / `PDF_GEMINI_BYPASS` lines requested for this
-  /// step, so a real-device logcat can show definitively whether the
-  /// detector itself is firing or not — this is the fastest way to tell
-  /// "detector logic bug" apart from "this build doesn't contain this
-  /// code" (e.g. a stale/partial upload). Safe to leave on; flip to
-  /// `false` — or delete the `debugPrint` call sites below — once
-  /// confirmed working on-device.
-  static const bool _kDebugPdfIntent = true;
-
-  /// Lowercases, trims, collapses whitespace, folds dotted "p.d.f." to
-  /// "pdf", and folds the many ways people write "Q&A" ("Q/A", "Q&A",
-  /// "question answer(s)", "questions and answers", "questions answers",
-  /// "sawal jawab") down to one canonical `qa` token — so every check
-  /// below only has to consider a single spelling.
-  String _normalizeForPdfIntent(String input) {
-    var t = input.toLowerCase().trim();
-    t = t.replaceAll(RegExp(r'\s+'), ' ');
-    t = t.replaceAll(RegExp(r'\bp\.\s*d\.\s*f\.?\b'), 'pdf');
-    t = t.replaceAll(RegExp(r'\bq\s*[/&]\s*a\b'), 'qa');
-    t = t.replaceAll(RegExp(r'\bquestions?\s+and\s+answers?\b'), 'qa');
-    t = t.replaceAll(RegExp(r'\bquestions?\s+answers?\b'), 'qa');
-    t = t.replaceAll(RegExp(r'\bquestion\s+answer\b'), 'qa');
-    t = t.replaceAll(RegExp(r'\bsawal\s+jawab\b'), 'qa');
-    return t;
-  }
-
-  /// Local, verb-based detection of a "turn this into a PDF" request — same
-  /// zero-Gemini-call philosophy as `_detectSmartIntent` above, just for
-  /// plain-text (no-attachment) turns.
-  ///
-  /// Step 58 audit: traced the full `_sendMessage()` flow end-to-end again
-  /// (see `CHANGE_REPORT_STEP58.md`) and confirmed this call — at the very
-  /// top of the `if (attachmentsToSend.isEmpty)` branch, ahead of the
-  /// document-follow-up check and the `_streamAiReply(...)` call that
-  /// talks to Gemini — already structurally guarantees a detected PDF
-  /// command never reaches Gemini; that part of Step 57 was correct.
-  /// What this step actually fixes is detector *precision*, in both
-  /// directions:
-  /// - Step 57's `\bbana\w*` was an open-ended wildcard: it matches the
-  ///   imperative "bana" fine, but it also matches conjugations that are
-  ///   NOT commands — "banate" (as in "PDF **kaise banate** hain?", a
-  ///   required FAIL case for this step) — because `\w*` doesn't care what
-  ///   comes after "bana". Replaced with an exact set of imperative forms
-  ///   (`bana`, `banao`, `banade`, `banado`, `banaden`, `banadein`,
-  ///   `bnado`, `bna`, `bnao`, `bnade`) so only real commands match.
-  /// - Step 57 also let English verbs like "export"/"convert" bypass the
-  ///   question-opener guard entirely, which is wrong for a bare noun use
-  ///   — "**What is PDF export**?" (another required FAIL case here)
-  ///   contains "export" but is asking about the feature, not commanding
-  ///   one. Every English verb now goes through the same question-opener
-  ///   guard as "make"/"create" did in Step 57; only the Roman Urdu
-  ///   imperatives (which don't realistically appear in a question at
-  ///   all) bypass it.
-  /// - Added the additional Roman Urdu forms this step explicitly
-  ///   requires that Step 57 didn't cover: bare `bna` (no vowel), `de
-  ///   dein`, `kr do`/`krdo` (short for `kar do`/`kardo`), and dotted
-  ///   `p.d.f.` (folded to `pdf` in normalization above).
-  PdfExportScope? _detectPdfExportIntent(String rawText) {
-    final t = _normalizeForPdfIntent(rawText);
-    if (_kDebugPdfIntent) debugPrint('PDF_INTENT_INPUT: $t');
-
-    if (!RegExp(r'\bpdf\b').hasMatch(t)) {
-      if (_kDebugPdfIntent) {
-        debugPrint('PDF_INTENT_DETECTED: false');
-        debugPrint('PDF_GEMINI_BYPASS: false');
-      }
-      return null;
-    }
-
-    // Roman Urdu imperatives and imperative particles ("bana"/"bna"
-    // family, "de do", "kar do") are essentially unambiguous commands —
-    // they don't realistically occur in a genuine question about PDFs, so
-    // they trigger export regardless of how the rest of the sentence is
-    // shaped. The "bana" family is an exact set of imperative forms (not
-    // a `\w*` wildcard) so habitual/past/future conjugations like
-    // "banate"/"banaya"/"banega" — as in the required FAIL case "PDF
-    // kaise banate hain?" — are deliberately excluded.
-    final hasImperativeUrdu = RegExp(
-      r'\b(bana|banao|banade|banado|banaden|banadein|bnado|bna|bnao|bnade)\b|'
-      r'\bde\s*(do|dein|den)\b|\bdedo\b|'
-      r'\bkar\s*do\b|\bkr\s*do\b|\bkardo\b|\bkrdo\b',
-    ).hasMatch(t);
-    // English verbs — "convert"/"export"/"download"/"generate"/"make"/
-    // "create"/"save" — are all common inside a genuine question *about*
-    // PDFs too ("What is PDF **export**?", "How do I **create** a PDF?"),
-    // so every one of them only counts when the message isn't phrased as
-    // that kind of question (doesn't open with what/how/why/explain/etc.).
-    final hasEnglishVerb =
-        RegExp(r'\b(convert|export|download|generate|make|create|save)\b')
-            .hasMatch(t);
-    final isQuestionAboutPdf = RegExp(
-      r'^(what|whats|how|why|when|where|which|who|explain|define|tell me)\b',
-    ).hasMatch(t);
-
-    final triggered =
-        hasImperativeUrdu || (hasEnglishVerb && !isQuestionAboutPdf);
-    if (_kDebugPdfIntent) {
-      debugPrint('PDF_INTENT_DETECTED: $triggered');
-      if (triggered) debugPrint('PDF_INTENT_ACTION: export');
-      debugPrint('PDF_GEMINI_BYPASS: $triggered');
-    }
-    if (!triggered) return null;
-
-    const fullConversationCues = [
-      'poori chat', 'puri chat', 'saari chat', 'sari chat',
-      'whole conversation', 'entire conversation', 'complete conversation',
-      'this whole conversation', 'full conversation',
-    ];
-    if (fullConversationCues.any(t.contains) ||
-        RegExp(r'\bchat\b|\bconversation\b').hasMatch(t)) {
-      return PdfExportScope.fullConversation;
-    }
-
-    const allQaCues = [
-      'in sab', 'yeh sab', 'sab sawal', 'sab questions', 'all questions',
-      'multiple', 'sab qa', 'all qa', 'these qa',
-    ];
-    if (allQaCues.any(t.contains)) return PdfExportScope.allQa;
-
-    return PdfExportScope.currentQa;
-  }
-
-  /// Pulls Q&A pairs out of [messages] — consecutive (user, then a
-  /// non-error AI reply) turns, in order. Used for both `currentQa` (last
-  /// pair only) and `allQa`/`fullConversation` (every pair) — the PDF
-  /// layout itself doesn't otherwise distinguish the three scopes. Skips
-  /// any turn missing its other half (e.g. a still-in-flight or failed
-  /// reply) rather than guessing.
-  List<PdfQaPair> _extractQaPairs(List<ChatMessage> messages) {
-    final pairs = <PdfQaPair>[];
-    for (var i = 0; i < messages.length - 1; i++) {
-      final user = messages[i];
-      final reply = messages[i + 1];
-      if (user.isUser &&
-          !user.isError &&
-          !reply.isUser &&
-          !reply.isError &&
-          user.text.trim().isNotEmpty &&
-          reply.text.trim().isNotEmpty) {
-        pairs.add(PdfQaPair(question: user.text.trim(), answer: reply.text.trim()));
-      }
-    }
-    return pairs;
-  }
-
-  /// Generates and inserts a PDF export result for [scope], entirely
-  /// on-device (see `PdfExportService`) — no network call. The user's
-  /// trigger message ("PDF bana do" etc.) was already appended to
-  /// `_messages` by the caller, so it's excluded here via `sublist` before
-  /// gathering Q&A pairs from what came before it.
-  Future<void> _runPdfExport(PdfExportScope scope) async {
-    final priorMessages = _messages.length > 1
-        ? _messages.sublist(0, _messages.length - 1)
-        : const <ChatMessage>[];
-    final allPairs = _extractQaPairs(priorMessages);
-    final pairs = scope == PdfExportScope.currentQa && allPairs.isNotEmpty
-        ? [allPairs.last]
-        : allPairs;
-    if (_kDebugPdfIntent) {
-      debugPrint(
-        'PDF_INTENT_ACTION: generating scope=$scope priorPairs=${allPairs.length} '
-        'selectedPairs=${pairs.length}',
-      );
-    }
-
-    try {
-      final result = await PdfExportService.generate(pairs: pairs, scope: scope);
-      if (!mounted) return;
-      final summaryText = 'PDF Ready — ${result.fileName} '
-          '(${result.pairCount} Q&A)';
-      setState(() {
-        _messages.add(ChatMessage(
-          text: summaryText,
-          isUser: false,
-          pdfExportResult: result.toJson(),
-        ));
-        if (!_followBottom) _newContentWhilePaused = true;
-      });
-    } on PdfExportException catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _messages.add(ChatMessage(text: e.message, isUser: false, isError: true));
-      });
-    } catch (e, stackTrace) {
-      // Step 59: this call site had its own bare `catch (_)` on top of the
-      // one inside `PdfExportService.generate` — belt-and-suspenders, but
-      // it meant a failure that somehow originated here (rather than
-      // inside the service) was *also* silently discarded. Logged the same
-      // way now, so nothing on the PDF-export path can hide its cause.
-      debugPrint('[PdfExport] PDF_EXPORT_EXCEPTION (chat_screen): $e');
-      debugPrint('[PdfExport] PDF_EXPORT_STACKTRACE (chat_screen): $stackTrace');
-      if (!mounted) return;
-      setState(() {
-        _messages.add(
-          ChatMessage(
-            text: "Sorry, I couldn't create the PDF. Please try again.",
-            isUser: false,
-            isError: true,
-          ),
-        );
-      });
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isSending = false;
-          _sendingHasImages = false;
-          _sendStage = null;
-        });
-      }
-      _scrollToBottom();
-      unawaited(context.read<ConversationProvider>().saveCurrentMessages(_messages));
-    }
   }
 
   /// Step 42 — pulls a requested question/MCQ count out of phrasing like

@@ -1,221 +1,95 @@
-# STEP 56 — AI Q&A → PDF Export Feature
+# CHANGE_REPORT_STEP56.md — Pak AI Professional Credits & Monetization System
 
-## Files modified
+## Files changed
 
-- `lib/models/chat_message.dart` — added one new optional field,
-  `pdfExportResult` (`Map<String, dynamic>?`), following the exact same
-  pattern as the existing `documentResult` field from Step 40: serialized
-  via `toJson()`/`fromJson()`, defaults to `null`, so chat history saved
-  before this step loads exactly as before.
-- `lib/widgets/chat_bubble.dart` — one new `else if` branch, placed right
-  next to the existing `documentResult` branch: when an assistant
-  message's `pdfExportResult` is set, render the new `PdfExportResultCard`
-  instead of the normal Markdown body. Nothing else in the file changed —
-  bubble chrome, the six-icon action row, streaming, all untouched.
-- `lib/screens/chat_screen.dart` — three additions, all inside/near
-  `_sendMessage()`:
-  1. `_detectPdfExportIntent(text)` — local keyword-based intent check
-     (see below).
-  2. `_extractQaPairs(messages)` — pulls consecutive (user, AI-reply) pairs
-     out of the existing `_messages` list.
-  3. `_runPdfExport(scope)` — calls `PdfExportService.generate`, then adds
-     either a `pdfExportResult` assistant message or a friendly error
-     message.
-  One new branch was inserted at the very top of the existing
-  `if (attachmentsToSend.isEmpty) { ... }` block in `_sendMessage()`, so it
-  only ever runs for plain-text turns (never touches the attachment/image/
-  document pipeline). Everything else in that 4000+ line file — smart
-  attachment routing, streaming, voice messages, document follow-up,
-  history, etc. — is untouched.
-- `pubspec.yaml` — no new dependency. Only a comment added above the
-  existing `syncfusion_flutter_pdf` entry noting it's now also used for
-  PDF *writing*.
+**New files (4):**
+- `lib/core/services/credit_service.dart` — centralized `CreditService` (ChangeNotifier)
+- `lib/widgets/credit_card.dart` — Profile "Pak AI Credits" card
+- `lib/widgets/credit_limit_sheet.dart` — bottom sheet shown when credits run out
+- `lib/screens/upgrade_plan_screen.dart` — Upgrade Plan UI (no payment processing)
 
-## Files added
+**Existing files modified (3, minimal edits each):**
+- `lib/main.dart` — added one `ChangeNotifierProvider(create: (_) => CreditService())` to the existing `MultiProvider` list + one import. Nothing else touched.
+- `lib/screens/profile_screen.dart` — one import + one `CreditCard(scheme: scheme)` inserted between the header card and the "Account" section. Nothing else touched.
+- `lib/screens/chat_screen.dart` — two imports + one `checkAndConsume(...)` block inserted at the very top of `_sendMessage()`, before attachment processing/UI locking. No other line in this 4000+ line file was touched (verified by diff).
 
-- `lib/core/services/pdf_export_service.dart` — the actual PDF generation.
-- `lib/widgets/pdf_export_result_card.dart` — the "📄 PDF Ready" chat card.
+No PDF, voice-note, AI-mode, chat composer, header/logo, or Gemini-API-key files were changed. Confirmed via `diff -rq` against the Step55 baseline — exactly these 3 existing files differ, plus the 4 new ones.
 
-## Dependencies
+## Architecture
 
-**No new package was added.** `syncfusion_flutter_pdf` (already a
-dependency since Step 22A, used there for `PdfDocument` +
-`PdfTextExtractor` to *read* PDF attachments) is reused here to *write*
-one — the same package supports both directions. `path_provider` (already
-used by the voice-recorder service) and `share_plus` (already used for the
-AI-reply "Share" action) are reused for saving and opening/sharing the
-generated file. No paid API, no API key, no network call of any kind.
+`CreditService` (in `lib/core/services/credit_service.dart`) is the single centralized service — no credit logic is duplicated in `ChatScreen` or `ProfileScreen`. Responsibilities:
+- current `remaining` credits, `dailyTotal` (90), `resetsAt` / `timeUntilReset`
+- `calculateCost({text, attachmentCount})` — deterministic usage-based tiering
+- `checkAndConsume({text, attachmentCount})` — the one entry point `ChatScreen` calls
+- `grantRewardedAdCredits()` — rewarded-ad grant path, capped at 3/period
+- automatic 24h reset, persisted via the project's existing `shared_preferences` (same pattern as `ThemeProvider`)
 
-## How PDF intent detection works
+Wired into the app the same way `ThemeProvider`/`ConversationProvider` already are: one `ChangeNotifierProvider` in `main.dart`.
 
-`_detectPdfExportIntent(text)` in `chat_screen.dart`:
+## Daily credit amount
 
-1. Requires the word "pdf" (`\bpdf\b`) to appear at all — otherwise
-   returns `null` immediately, so it can never fire on unrelated text.
-2. Requires at least one export/action phrase from a fixed list (`bana
-   do`, `banado`, `convert`, `download`, `export`, `create pdf`, `make a
-   pdf`, `save as pdf`, `pdf mein de do`, etc., covering the English and
-   Roman Urdu/Hindi variants named in the spec). A message that mentions
-   "pdf" with none of these — e.g. **"What is a PDF?"** or **"PDF kya
-   hota hai?"** — has no action cue and returns `null`, so it falls
-   straight through to the normal Gemini chat flow untouched.
-3. If both checks pass, a second small keyword list decides the scope:
-   phrases like "poori chat" / "whole conversation" / "complete
-   conversation" → `PdfExportScope.fullConversation`; phrases like "in
-   sab" / "these questions and answers" / "multiple" →
-   `PdfExportScope.allQa`; anything else (the common case, e.g. "Is Q/A ko
-   PDF mein bana do") → `PdfExportScope.currentQa`.
+**90 credits / 24-hour period**, per spec. Stored as a persisted period-start timestamp (`SharedPreferences`), not a fixed clock time — the period only rolls over once 24 real hours have elapsed since that timestamp, so closing/reopening the app never resets it early.
 
-This is a **local, zero-Gemini-call** check, run only for plain-text turns
-with no attachment — it never intercepts an attachment-based send.
+## Usage-based cost calculation
 
-## How conversation/Q&A selection works
+`CreditService.calculateCost()` tiers by trimmed prompt character length, plus a flat per-attachment surcharge:
 
-`_extractQaPairs()` walks the existing `_messages` list and pairs up every
-consecutive (user message, non-error AI reply) — the same list already
-rendered on screen and already persisted via `ConversationProvider`, no
-new storage. The user's own PDF-request message (already appended to
-`_messages` by the shared code above the branch) is excluded via
-`sublist` before pairing, so it's never itself included as a "question."
+| Length (chars)   | Cost |
+|-------------------|------|
+| ≤ 4 ("Hi", "Ok")   | 1    |
+| ≤ 20 (short)       | 2    |
+| ≤ 60 (normal)      | 4    |
+| ≤ 150              | 6    |
+| ≤ 400 (long)       | 9    |
+| ≤ 800 (very long)  | 12   |
+| > 800              | 16   |
 
-- `currentQa` → just the last pair.
-- `allQa` / `fullConversation` → every pair found. (The two scopes
-  currently produce the same PDF content, differing only in the
-  subtitle line printed at the top — "AI Conversation / Q&A" vs.
-  "Complete Conversation Export." A future step could make
-  `fullConversation` include non-paired standalone messages too if
-  that distinction turns out to matter in practice — noted as a
-  limitation below.)
-- If no pairs are found (e.g. the very first message in a fresh chat is
-  a PDF request), `PdfExportService.generate` throws a friendly
-  `PdfExportException` instead of producing an empty/garbage PDF.
+`+3` per attachment. This is a simple, predictable local heuristic — **not** a claim of real Gemini token accounting (the app has no reliable access to that), as required by the spec. A message can never consume more than the remaining balance: `checkAndConsume` blocks (deducts nothing) if the calculated cost exceeds what's left.
 
-## How the PDF is generated and saved
+## Rewarded ad behavior
 
-`PdfExportService.generate()`:
+`pubspec.yaml` has **no AdMob dependency** (`google_mobile_ads` is not present — confirmed by inspection). Per spec, no fake ad integration or fake credits were added. What was built instead:
+- `CreditService.grantRewardedAdCredits()` — the real grant method, ready to be called from a future `RewardedAd.onUserEarnedReward` callback. Enforces the 3-per-period cap and +18 credits.
+- The credit-limit sheet's "Watch Ad" tile shows live "`N` rewards remaining today" state from `CreditService.rewardedClaimsRemaining`, disables itself at 0, but currently only shows a "coming soon" message on tap — it does **not** call `grantRewardedAdCredits()`, since there is no real ad completion callback to gate it on.
 
-- Builds a real `PdfDocument` via `syncfusion_flutter_pdf` — A4 pages,
-  40pt margins, a "Pak AI" title in the app's emerald accent color, a
-  subtitle, then a "Question" / "Answer" block per pair with clean
-  spacing and a light divider between pairs.
-- All text is drawn with `PdfTextElement` + `PdfLayoutFormat(layoutType:
-  PdfLayoutType.paginate)`, which automatically starts a new page
-  whenever a block overflows the current one — this is what gives real,
-  automatic multi-page output with proper text wrapping for long AI
-  answers, matching Syncfusion's own documented pattern for flowing text.
-  Every character is real, selectable PDF text — no screenshots, no
-  rasterized chat UI.
-- Unicode/Urdu text renders as far as the built-in Helvetica standard
-  font supports it (see Limitations).
-- The finished PDF is saved to
-  `<app documents directory>/pak_ai_exports/PakAI_QA_<timestamp>.pdf` —
-  the app's own private storage, not a public Downloads folder.
+**3-ad daily limit:** enforced in `CreditService` via a persisted `rewardedCount`, reset alongside the main credit reset every 24h.
 
-## How Download/Open and Share work
+## Profile UI changes
 
-There is no file-opening (`open_file`) or MediaStore/public-Downloads-save
-plugin already in the project, and a direct public-Downloads write is the
-exact kind of thing that's unreliable under modern Android scoped storage.
-So the existing `share_plus` dependency — already used for the AI-reply
-"Share" action — is reused for the result card's single **"Download PDF"**
-button: it calls `Share.shareXFiles([XFile(path, mimeType:
-'application/pdf')])`, which opens the system share sheet. From there the
-person can save the file to Files/Google Drive/etc., or hand it straight
-to any installed PDF viewer, which functionally covers both "Download"
-and "Share" from the spec with one action that's guaranteed to work
-without any new native code or permissions. This is a deliberate,
-documented deviation from the spec's literal two-button
-(`[Download PDF]` + optional `[Share]`) mock — flagged here rather than
-adding a second button that would just call the same underlying share
-sheet a second time.
+Added `CreditCard` between the existing profile header and the "Account" section — remaining/total, a progress bar, and a live "Resets in Xh Ym" countdown (self-updating every minute). Uses the existing emerald `ChatPalette` scheme passed in from `ProfileScreen`, existing card radius/spacing/shadow conventions, dark/light supported automatically via `ColorScheme`. No existing Profile UI was replaced or reordered otherwise.
 
-The card also checks the file still exists on tap (in case the app's
-cache was cleared since the PDF was generated) and shows a friendly
-message instead of a silent failure if it's gone.
+## Upgrade Plan UI
 
-## Error handling
+New `UpgradePlanScreen` — benefits list (More daily credits / Higher usage limits / Fewer restrictions / Premium AI experience), an "Upgrade to Pro" button that shows a "coming soon" message. **No fake payment success** — no payment gateway exists in this project, so none was invented.
 
-`PdfExportService.generate` never lets a raw exception escape — every
-failure path (empty conversation, a generation error, a file-system
-error) is caught and turned into a `PdfExportException` with the exact
-user-facing message from the spec: *"Sorry, I couldn't create the PDF.
-Please try again."* (or, for the specific empty-conversation case, a more
-specific "there's no conversation yet" message). `_runPdfExport` in
-`chat_screen.dart` catches that and adds a normal error-styled chat
-bubble — the same `isError: true` styling already used elsewhere in the
-app — rather than crashing or silently doing nothing.
+## Confirmations
 
-## Confirmation: existing PDF reading/extraction feature untouched
+- ✅ **Chat composer usage preview was NOT added** — grepped `chat_screen.dart` for all credit-related lines; only the two new imports and the `checkAndConsume` block exist. No "≈ N credits" or similar text anywhere near the composer.
+- ✅ **PDF functionality untouched** — no PDF-related file appears in the diff.
+- ✅ **PK Model / Voice Note untouched** — `_sendVoiceMessage`/`_requestVoiceAiReply` and all AI-mode files are unmodified; the credit check only wraps the main text/attachment `_sendMessage()` path, per the explicit "Do NOT modify voice-note functionality" instruction. (Flagged as a deliberate scope decision below.)
+- ✅ Existing Gemini API key handling, `modeInstruction`, streaming, and message rendering are all unchanged — the credit check runs entirely before any of that code executes and returns early on insufficient credits.
 
-`lib/core/services/attachment_processor_service.dart` (the file that owns
-`PdfDocument`/`PdfTextExtractor` for reading/extracting attached PDFs) was
-**not modified at all** — confirmed via `diff` against the Step 55
-baseline. The PDF picker, attachment sheet, PDF preview, and PDF-as-
-attachment AI flow are all byte-identical to before this step.
+## Deliberate scope note
 
-## Confirmation: Step 55 Dark Mode / Light Mode untouched
+The credit check wraps `_sendMessage()` only (the dominant send path — plain text, attachments, smart-capability routing, and document follow-up all flow through it). It does **not** wrap `_sendVoiceMessage()`/`_requestVoiceAiReply()` (the separate voice-message-to-Gemini path), since the brief explicitly says not to modify voice-note functionality and wrapping it would have required touching that code. This means voice messages currently bypass the credit system — flagging this as a known gap for a future step if voice messages should also consume credits.
 
-No theme file (`lib/core/theme/*`) was touched. `chat_bubble.dart`'s only
-change is the one new `else if` branch described above — the existing
-bubble colors, action row, streaming, and Step 32/48/52/53 styling are
-byte-identical elsewhere in the file (confirmed via diff).
+## Verification
 
-## Confirmation: no paid API/key added
+1. ✅ Free user starts with 90 credits — `CreditService._remaining` initializes to `dailyLimit` (90) on first load.
+2. ✅ "Hi" (2 chars) → `calculateCost` returns 1.
+3. ✅ A normal message (e.g. 60–150 chars) → 4–6, more than "Hi".
+4. ✅ A longer message (400–800+ chars) → 9–16, more than a short message.
+5. ✅ Insufficient credits → `checkAndConsume` returns `false` before any Gemini call; `_sendMessage` returns immediately after showing the sheet.
+6. ✅ Credits reset after 24h — `_resetIfExpired()` compares `DateTime.now()` against the persisted `resetsAt`, not app-open events.
+7. ✅ Rewarded ad grants +18 only via `grantRewardedAdCredits()`, which is not currently called from the UI (no real completion callback exists) — confirmed no path grants credits on tap alone.
+8. ✅ Max rewarded claims = 3/period — enforced in `grantRewardedAdCredits()`.
+9. ✅ Chat composer has no usage-preview indicator — confirmed via grep above.
+10–15: Not independently re-verifiable in this environment (no local Flutter/Android SDK — same limitation as every prior step in this project). Verification here is structural: `diff -rq` against the Step55 baseline (confirms only the 3 listed files changed) and per-file paren/brace balance checks (confirmed balanced on all 7 touched/new files).
 
-Zero new dependencies. Zero network calls anywhere in the new code path —
-`PdfExportService.generate` is 100% local file I/O plus in-memory PDF
-construction.
+## Flutter/Dart analysis
 
-## Verification performed
+**Not run — Flutter/Dart are unavailable in this environment** (confirmed: `flutter`/`dart` not found on PATH), same as every prior step in this project. `git diff --check`, `flutter analyze`, and `dart format` were not executed; this is reported plainly rather than claimed. Real verification will happen via the project's existing GitHub Actions CI on push, per the established workflow.
 
-No local Flutter/Android SDK is available in this environment (same as
-every prior step in this project) — `flutter analyze`/`flutter build`
-could not be run directly; verification was manual/structural:
+## Not done (per instructions)
 
-- Diffed the full project tree against the Step 55 baseline: confirmed
-  only the 4 files above were modified and only the 2 new files were
-  added — nothing else in the ~65-file project changed.
-- Brace/paren/bracket balance checked on every touched/added Dart file.
-- Every Syncfusion PDF API call used (`PdfDocument`, `pages.add()`,
-  `pageSettings.size`/`margins.all`, `PdfTextElement.draw` with
-  `PdfLayoutFormat(layoutType: PdfLayoutType.paginate)`,
-  `result.bounds.bottom`, `page.getClientSize()`, `PdfPen`/
-  `graphics.drawLine`, `document.save()`/`.dispose()`) was checked
-  against Syncfusion's own official Flutter PDF documentation and
-  pub.dev package docs to match real, current method signatures — this
-  package was not used for *writing* PDFs anywhere else in the project
-  before this step, so nothing existing could be copied from.
-  `Share.shareXFiles`/`XFile` (from `share_plus`, already a project
-  dependency) was checked the same way.
-- Real device/CI build verification (this project's standard practice
-  for every step, per the existing GitHub Actions workflow) still needs
-  to happen on push, same as all prior steps.
-
-This step was **not** run through an actual `flutter analyze`/build, so
-per the project's own standing rule this isn't claimed as a build-verified
-change — it's a careful, spec-matched, dependency-reused implementation
-ready for that CI build to confirm.
-
-## Limitations
-
-- `allQa` and `fullConversation` currently produce identical PDF content
-  (every paired Q&A found) — only the printed subtitle differs. A
-  standalone message with no paired reply (or vice versa) is silently
-  skipped rather than included as a "full conversation" transcript in
-  the literal sense. Flagging this as a reasonable first pass rather than
-  a perfect match to the spec's three-tier wording.
-- Intent detection is keyword-based (same approach as the existing Step
-  40/42 smart-attachment routing) — very unusual phrasings not on the
-  action-cue list will fall through to a normal chat reply instead of
-  triggering an export, matching the existing project's established,
-  intentionally-simple local-parsing approach rather than adding a new
-  Gemini call just to classify one message.
-- Unicode/Urdu rendering is limited by whatever the standard Helvetica
-  PDF font supports — Syncfusion's standard fonts are Latin-script only,
-  so Urdu script itself (as opposed to Roman-Urdu written in Latin
-  letters) may not render correctly. Adding a bundled Unicode/Urdu TTF
-  font (via `PdfTrueTypeFont`) would fix this but wasn't done here to
-  keep this step's footprint minimal — noted as a natural follow-up.
-- The "Download PDF" button uses the system share sheet rather than a
-  literal, separate Download action — see the "How Download/Open and
-  Share work" section above for the reasoning.
+- Not committed, not pushed, no ZIP created automatically — this report and the working files are left for review first.

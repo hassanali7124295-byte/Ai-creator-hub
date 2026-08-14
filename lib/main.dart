@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'core/theme/app_theme.dart';
 import 'core/providers/theme_provider.dart';
 import 'core/providers/conversation_provider.dart';
+import 'core/services/credit_service.dart';
 import 'screens/chat_screen.dart';
 import 'screens/welcome_screen.dart';
 
@@ -36,6 +37,11 @@ class PakAIApp extends StatelessWidget {
         // it remembers) survives pushes to History/Settings/Profile and
         // back for the whole lifetime of the app.
         ChangeNotifierProvider(create: (_) => ConversationProvider()),
+        // Step 56: owns the free-tier usage-based credits system — see
+        // CreditService doc comment. Created once here (not inside
+        // ChatScreen/ProfileScreen) so the same balance/reset state is
+        // shared and stays in sync between both screens.
+        ChangeNotifierProvider(create: (_) => CreditService()),
       ],
       child: Consumer<ThemeProvider>(
         builder: (context, themeProvider, _) {
