@@ -5,11 +5,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../core/services/document_intelligence_service.dart';
-import '../core/services/pdf_export_service.dart';
 import '../models/chat_message.dart';
 import 'attachment_preview.dart';
 import 'document_result_card.dart';
-import 'pdf_export_result_card.dart';
 
 /// A single chat bubble, aligned right (user) or left (AI), with distinct
 /// colors, Markdown rendering for AI replies, an error state for failed
@@ -341,13 +339,21 @@ class _ChatBubbleState extends State<ChatBubble> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(
-                          Icons.error_outline_rounded,
+                          // Step 57: a quota/rate-limit failure reads as
+                          // Pak AI being momentarily busy, not broken —
+                          // a clock icon fits that framing better than
+                          // the generic error glyph.
+                          message.isQuotaError
+                              ? Icons.hourglass_bottom_rounded
+                              : Icons.error_outline_rounded,
                           size: 16,
                           color: textColor,
                         ),
                         const SizedBox(width: 6),
                         Text(
-                          'Something went wrong',
+                          message.isQuotaError
+                              ? 'Pak AI is temporarily busy'
+                              : 'Something went wrong',
                           style: theme.textTheme.labelSmall?.copyWith(
                             color: textColor,
                             fontWeight: FontWeight.w600,
@@ -385,16 +391,6 @@ class _ChatBubbleState extends State<ChatBubble> {
                   DocumentResultCard(
                     result: DocumentIntelligenceResult.fromJson(
                       message.documentResult!,
-                    ),
-                  )
-                // Step 56: an AI Q&A PDF export renders as a compact
-                // "📄 PDF Ready" card instead of the plain Markdown body —
-                // exactly the same additive pattern as documentResult
-                // above, just for a different structured result type.
-                else if (isAiReply && message.pdfExportResult != null)
-                  PdfExportResultCard(
-                    result: PdfExportResult.fromJson(
-                      message.pdfExportResult!,
                     ),
                   )
                 // AI replies render as Markdown (bold, lists, code blocks,

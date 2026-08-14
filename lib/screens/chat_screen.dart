@@ -337,6 +337,35 @@ class _ChatScreenState extends State<ChatScreen> {
   int? _smartErrorIndex;
   VoidCallback? _smartRetryAction;
 
+  // Step 57 — Quota/Error Handling: the credit cost already deducted
+  // (via `CreditService.checkAndConsume`) for the message currently in
+  // flight, kept only until that specific send is resolved. Set once,
+  // right after a successful deduction in `_sendMessage`; cleared by
+  // `_resolvePendingCreditRefund` the moment that send finishes — on
+  // success it's simply discarded (the deduction stands), on failure
+  // it's refunded. Retries/regenerates never set this (they never
+  // re-deduct), so they safely no-op if they happen to check it.
+  int? _pendingCreditRefund;
+
+  /// Resolves the credit deduction for the message currently in flight,
+  /// if any is still pending — refunding it on failure, or simply
+  /// discarding the marker on success. Safe to call from any
+  /// success/failure branch a fresh send can reach; a no-op if nothing
+  /// is pending (e.g. during a retry/regenerate, which never deducted in
+  /// the first place).
+  void _resolvePendingCreditRefund({required bool refund}) {
+    final cost = _pendingCreditRefund;
+    if (cost == null) return;
+    _pendingCreditRefund = null;
+    // Safe to call from any success/failure branch regardless of
+    // `mounted` — clearing the marker above is what matters for
+    // preventing a double-refund; only the actual `CreditService` call
+    // needs a live context.
+    if (refund && mounted) {
+      unawaited(context.read<CreditService>().refund(cost));
+    }
+  }
+
   // Step 40 (Part 5/8): the most recently analyzed document, cached so a
   // follow-up question doesn't need the file read/compressed/extracted
   // again — reused directly by `DocumentIntelligenceService.askQuestion`.
@@ -680,15 +709,23 @@ class _ChatScreenState extends State<ChatScreen> {
         : (attachmentsToSend.length > 1
             ? 'What can you tell me about these attachments?'
             : 'What can you tell me about this attachment?');
-    final hasCredits = await context.read<CreditService>().checkAndConsume(
-          text: creditText,
-          attachmentCount: attachmentsToSend.length,
-        );
+    final creditService = context.read<CreditService>();
+    final hasCredits = await creditService.checkAndConsume(
+      text: creditText,
+      attachmentCount: attachmentsToSend.length,
+    );
     if (!hasCredits) {
       if (!mounted) return;
       await showCreditLimitSheet(context);
       return;
     }
+    // Step 57: remember what was just deducted so it can be refunded if
+    // this specific send fails before a successful AI reply comes back —
+    // see `_resolvePendingCreditRefund`.
+    _pendingCreditRefund = creditService.calculateCost(
+      text: creditText,
+      attachmentCount: attachmentsToSend.length,
+    );
 
     final hasImages = attachmentsToSend
         .any((a) => a.previewMeta.kind == ChatAttachmentKind.image);
@@ -745,9 +782,11 @@ class _ChatScreenState extends State<ChatScreen> {
           attachmentExtractedTexts.add(processed.extractedText!);
         }
       } on AttachmentException catch (e) {
+        _resolvePendingCreditRefund(refund: true);
         _reportAttachmentFailure(e.message);
         return;
       } catch (_) {
+        _resolvePendingCreditRefund(refund: true);
         _reportAttachmentFailure('Could not process that attachment.');
         return;
       }
@@ -903,6 +942,7 @@ class _ChatScreenState extends State<ChatScreen> {
       );
 
       if (!mounted) return;
+      _resolvePendingCreditRefund(refund: false);
       final aiMessage = ChatMessage(text: reply, isUser: false);
       setState(() {
         _messages.add(aiMessage);
@@ -910,10 +950,20 @@ class _ChatScreenState extends State<ChatScreen> {
         if (!_followBottom) _newContentWhilePaused = true;
       });
     } on GeminiException catch (e) {
+      // Step 57: never got a successful reply — refund the credits this
+      // send already deducted, and surface e.message (already a short,
+      // user-safe sentence — see GeminiService._friendlyApiError) instead
+      // of any raw API payload.
+      _resolvePendingCreditRefund(refund: true);
       if (!mounted) return;
       setState(() {
         _messages.add(
-          ChatMessage(text: e.message, isUser: false, isError: true),
+          ChatMessage(
+            text: e.message,
+            isUser: false,
+            isError: true,
+            isQuotaError: e.isQuotaError,
+          ),
         );
       });
       _checkApiKey();
@@ -1394,6 +1444,7 @@ class _ChatScreenState extends State<ChatScreen> {
       }
 
       if (!mounted) return;
+      _resolvePendingCreditRefund(refund: false);
       setState(() {
         if (insertIndex < _messages.length) {
           _messages[insertIndex] = result;
@@ -1467,6 +1518,7 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       );
       if (!mounted) return;
+      _resolvePendingCreditRefund(refund: false);
       final result = ChatMessage(text: turn.answer, isUser: false);
       setState(() {
         _activeDocumentQaTurns = [..._activeDocumentQaTurns, turn];
@@ -1514,6 +1566,10 @@ class _ChatScreenState extends State<ChatScreen> {
   /// site below) instead of the generic `_retryLastMessage`, which
   /// wouldn't know how to re-run a smart capability.
   void _replaceWithSmartError(int index, String message, VoidCallback retry) {
+    // Step 57: refunds the deduction for the send that's currently
+    // failing, if one is still pending — a no-op on a retry's own
+    // failure, since retries never re-deduct in the first place.
+    _resolvePendingCreditRefund(refund: true);
     if (!mounted) return;
     setState(() {
       final errorMessage = ChatMessage(text: message, isUser: false, isError: true);
@@ -1639,6 +1695,9 @@ class _ChatScreenState extends State<ChatScreen> {
       await completer.future;
       if (!mounted) return;
       if (buffer.isNotEmpty) {
+        // Step 57: a reply actually came back — the deduction for this
+        // send (if any is still pending) stands, nothing to refund.
+        _resolvePendingCreditRefund(refund: false);
         setState(() {
           _streamingMessage =
               insertIndex < _messages.length ? _messages[insertIndex] : null;
@@ -1656,23 +1715,33 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (e) {
       if (!mounted) return;
       if (buffer.isEmpty) {
-        // No text ever arrived — swap the empty placeholder for an error
-        // bubble (with Retry available — see the `onRetry` wiring below).
-        final message =
-            e is GeminiException ? e.message : 'Could not reach Pak AI. Check your connection and try again.';
+        // No text ever arrived — refund this send's credits (if any are
+        // still pending; a retry/regenerate never deducted in the first
+        // place, so this is a no-op for those) and swap the empty
+        // placeholder for an error bubble (with Retry available — see
+        // the `onRetry` wiring below).
+        _resolvePendingCreditRefund(refund: true);
+        final isQuota = e is GeminiException && e.isQuotaError;
+        final message = e is GeminiException
+            ? e.message
+            : 'Could not reach Pak AI. Check your connection and try again.';
         setState(() {
           if (insertIndex < _messages.length) {
             _messages[insertIndex] = ChatMessage(
               text: message,
               isUser: false,
               isError: true,
+              isQuotaError: isQuota,
             );
           }
         });
         _checkApiKey();
+      } else {
+        // Partial text already streamed in — a real (if incomplete)
+        // reply was received, so this counts as success for credit
+        // purposes; keep the text as-is, same as a normal completion.
+        _resolvePendingCreditRefund(refund: false);
       }
-      // Otherwise: partial text already streamed in — keep it as-is,
-      // same as a normal completion.
     } finally {
       // Step 26.1: stop the periodic flush first — no further UI updates
       // for this stream after this point, which is what makes Stop
@@ -2454,7 +2523,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _smartRetryAction = null;
       });
     } on GeminiException catch (e) {
-      _appendVoiceReplyError(e.message, audioPath);
+      _appendVoiceReplyError(e.message, audioPath, isQuotaError: e.isQuotaError);
     } on AttachmentException catch (e) {
       _appendVoiceReplyError(e.message, audioPath);
     } catch (_) {
@@ -2485,10 +2554,19 @@ class _ChatScreenState extends State<ChatScreen> {
   /// loading state instead — see `_requestVoiceAiReply`), so the error is
   /// simply appended. The voice message that was already sent is never
   /// touched.
-  void _appendVoiceReplyError(String message, String audioPath) {
+  void _appendVoiceReplyError(
+    String message,
+    String audioPath, {
+    bool isQuotaError = false,
+  }) {
     if (!mounted) return;
     setState(() {
-      final errorMessage = ChatMessage(text: message, isUser: false, isError: true);
+      final errorMessage = ChatMessage(
+        text: message,
+        isUser: false,
+        isError: true,
+        isQuotaError: isQuotaError,
+      );
       _messages.add(errorMessage);
       final errorIndex = _messages.length - 1;
       _smartErrorIndex = errorIndex;

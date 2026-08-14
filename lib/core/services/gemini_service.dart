@@ -5,9 +5,19 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 /// Thrown when the Gemini API call fails for any reason (network,
 /// bad response shape, non-200 status, missing API key, etc.).
+///
+/// Step 57 — Quota/Error Handling: [message] is always a short, plain,
+/// user-safe sentence. Raw Google/Gemini API error payloads (quota JSON,
+/// `RetryInfo`, stack traces, etc.) are never placed here — see
+/// [GeminiService._friendlyApiError], the single place that turns a raw
+/// HTTP error response into this exception. [isQuotaError] is set when
+/// the failure was specifically a quota/rate-limit response (HTTP 429,
+/// or a body reporting `RESOURCE_EXHAUSTED`), so callers can show a
+/// dedicated "temporarily busy" retry state instead of a generic error.
 class GeminiException implements Exception {
   final String message;
-  GeminiException(this.message);
+  final bool isQuotaError;
+  GeminiException(this.message, {this.isQuotaError = false});
 
   @override
   String toString() => message;
@@ -163,6 +173,48 @@ Current date and time:
     return key != null && key.trim().isNotEmpty;
   }
 
+  // Step 57 — Quota/Error Handling: the single place that turns a raw,
+  // non-200 Gemini/Google API HTTP response into a [GeminiException].
+  // Used by both [sendMessage] and [sendMessageStream] so there is
+  // exactly one spot that decides what's safe to show the user — the
+  // raw [body] (which, on a quota/rate-limit response, contains fields
+  // like `quotaMetric`, `quotaValue`, `quotaDimensions`, and `RetryInfo`)
+  // is inspected only to classify the failure and is never echoed back
+  // into the returned message.
+  static GeminiException _friendlyApiError(
+    int statusCode,
+    String body, {
+    bool hasAttachments = false,
+  }) {
+    // Google returns HTTP 429 for rate-limit/quota errors; some quota
+    // failures also surface the gRPC status name `RESOURCE_EXHAUSTED` in
+    // the body even when wrapped differently. Either signal is treated
+    // as "temporarily busy" — never shown as raw JSON.
+    final isQuota = statusCode == 429 || body.contains('RESOURCE_EXHAUSTED');
+    if (isQuota) {
+      return GeminiException(
+        'Please wait a little and try again.',
+        isQuotaError: true,
+      );
+    }
+
+    if (statusCode == 400 || statusCode == 403) {
+      return GeminiException(
+        hasAttachments
+            ? 'Gemini rejected the request — it may not support this file type. '
+                'Double-check the API key in Settings, or try a different file.'
+            : 'Gemini rejected the request ($statusCode). '
+                'Double-check the API key in Settings.',
+      );
+    }
+
+    // Any other non-200 status (500/502/503, unexpected shapes, etc.) —
+    // a short, generic message; never the raw response body.
+    return GeminiException(
+      'Pak AI could not complete this request. Please try again in a moment.',
+    );
+  }
+
   /// Sends [prompt] to Gemini and returns the model's text reply.
   ///
   /// [history] is an optional list of prior turns as
@@ -259,18 +311,11 @@ Current date and time:
           )
           .timeout(requestTimeout);
 
-      if (response.statusCode == 400 || response.statusCode == 403) {
-        final hint = response.statusCode == 400 && attachments.isNotEmpty
-            ? 'Gemini rejected the request — it may not support this file type. '
-                'Double-check the API key in Settings, or try a different file.'
-            : 'Gemini rejected the request (${response.statusCode}). '
-                'Double-check the API key in Settings.';
-        throw GeminiException(hint);
-      }
-
       if (response.statusCode != 200) {
-        throw GeminiException(
-          'Gemini API error (${response.statusCode}): ${response.body}',
+        throw _friendlyApiError(
+          response.statusCode,
+          response.body,
+          hasAttachments: attachments.isNotEmpty,
         );
       }
 
@@ -409,12 +454,9 @@ Current date and time:
               .transform(utf8.decoder)
               .join()
               .timeout(requestTimeout);
-          final hint = (streamedResponse.statusCode == 400 ||
-                  streamedResponse.statusCode == 403)
-              ? 'Gemini rejected the request (${streamedResponse.statusCode}). '
-                  'Double-check the API key in Settings.'
-              : 'Gemini API error (${streamedResponse.statusCode}): $body';
-          controller.addError(GeminiException(hint));
+          controller.addError(
+            _friendlyApiError(streamedResponse.statusCode, body),
+          );
           return;
         }
 

@@ -8,6 +8,14 @@ class ChatMessage {
   final bool isError;
   final List<ChatAttachment> attachments;
 
+  /// Step 57 — Quota/Error Handling: set only on an [isError] message
+  /// produced by a Gemini quota/rate-limit response. Lets `ChatBubble`
+  /// show the dedicated "Pak AI is temporarily busy" retry card instead
+  /// of the generic "Something went wrong" error bubble. Always `false`
+  /// for every other message, including older saved history (see
+  /// `fromJson` below).
+  final bool isQuotaError;
+
   /// Step 40 — Chat-Native Intelligence UX Refactor: an optional, already-
   /// serialized `DocumentIntelligenceResult` (see
   /// `DocumentIntelligenceResult.toJson`/`.fromJson`) attached to an
@@ -20,16 +28,6 @@ class ChatMessage {
   /// normal text).
   final Map<String, dynamic>? documentResult;
 
-  /// STEP 56 — AI Q&A → PDF Export Feature: an optional, already-serialized
-  /// `PdfExportResult` (see `PdfExportResult.toJson`/`.fromJson` in
-  /// `pdf_export_service.dart`) attached to an assistant message. When
-  /// present, `ChatBubble` renders a compact "📄 PDF Ready" card
-  /// (`PdfExportResultCard`) instead of the plain Markdown body — exactly
-  /// the same pattern as `documentResult` above. [text] still holds a
-  /// short plain-text summary for copy/share/history. `null` for every
-  /// other message.
-  final Map<String, dynamic>? pdfExportResult;
-
   ChatMessage({
     required this.text,
     required this.isUser,
@@ -37,7 +35,7 @@ class ChatMessage {
     this.isError = false,
     this.attachments = const [],
     this.documentResult,
-    this.pdfExportResult,
+    this.isQuotaError = false,
   }) : timestamp = timestamp ?? DateTime.now();
 
   Map<String, dynamic> toJson() => {
@@ -48,7 +46,7 @@ class ChatMessage {
         if (attachments.isNotEmpty)
           'attachments': attachments.map((a) => a.toJson()).toList(),
         if (documentResult != null) 'documentResult': documentResult,
-        if (pdfExportResult != null) 'pdfExportResult': pdfExportResult,
+        if (isQuotaError) 'isQuotaError': isQuotaError,
       };
 
   // `attachments` is a new field as of Step 9 — history saved by earlier
@@ -68,6 +66,6 @@ class ChatMessage {
                 .toList() ??
             const [],
         documentResult: json['documentResult'] as Map<String, dynamic>?,
-        pdfExportResult: json['pdfExportResult'] as Map<String, dynamic>?,
+        isQuotaError: json['isQuotaError'] as bool? ?? false,
       );
 }

@@ -158,6 +158,21 @@ class CreditService extends ChangeNotifier {
     return true;
   }
 
+  /// Step 57 — Quota/Error Handling: returns credits that were already
+  /// deducted (via [checkAndConsume]) for a message that then failed
+  /// before a successful AI reply was received (quota/rate-limit/
+  /// network/API failure). [amount] should be exactly the value
+  /// [calculateCost] returned for that same message — callers are
+  /// responsible for only calling this once per deduction (a retry that
+  /// never re-deducted must never call this either).
+  Future<void> refund(int amount) async {
+    if (amount <= 0) return;
+    await _resetIfExpired();
+    _remaining += amount;
+    await _persist();
+    notifyListeners();
+  }
+
   /// Grants [rewardedAdBonus] credits after a rewarded ad's completion
   /// callback has actually confirmed the reward — never call this just
   /// because an ad was requested/started. Returns `false` (grants
