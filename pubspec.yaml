@@ -48,6 +48,13 @@ dependencies:
   share_plus: ^10.1.3      # native share sheet for the "Share" action
   flutter_tts: ^4.2.0      # on-device text-to-speech for "Read Aloud"
 
+  # Step 60: real "Download PDF" (as opposed to Share, which already used
+  # share_plus above). Saves bytes straight into the device's Downloads
+  # via Android's scoped-storage-safe MediaStore APIs internally — no
+  # manual filesystem/permission handling needed, no server, no paid
+  # service. Small, free, open-source, MIT-licensed.
+  file_saver: ^0.2.14
+
   # Step 18.5: continuous speech recognition service — no longer wired to
   # the chat composer's mic button as of Step 43 (see
   # `lib/core/services/voice_input_service.dart`), kept in the project

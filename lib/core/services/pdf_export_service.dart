@@ -6,7 +6,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 
 /// STEP 56 — AI Q&A → PDF Export Feature.
-/// STEP 59 — Fix the actual PDF generation failure.
+/// STEP 59 — Fixed the generation failure (swallowed exception).
+/// STEP 60 — Fixed corrupted Q&A content in the generated PDF.
 ///
 /// Generates a Pak AI–branded PDF entirely on-device from already-available
 /// chat text, using the `syncfusion_flutter_pdf` package the project already
@@ -15,15 +16,23 @@ import 'package:syncfusion_flutter_pdf/pdf.dart';
 /// this — Syncfusion's PDF library can both read and *write* PDFs, so the
 /// existing dependency is reused as-is. No network calls, no paid API.
 ///
-/// STEP 59 root cause: `PdfStandardFont` (Helvetica) only encodes the
-/// WinAnsi/Latin-1 character range. Pak AI's replies routinely contain
-/// Urdu-script text (and other non-Latin characters), and drawing that text
-/// with a standard font throws inside Syncfusion's layout engine. That
-/// exception was being swallowed by a bare `catch (_)` and replaced with the
-/// generic "Sorry, I couldn't create the PDF" message — so the export
-/// *always* looked like a mystery failure once any non-Latin text was
-/// involved, and the real cause never reached Logcat. See
-/// `CHANGE_REPORT_STEP59.md` for the full trace.
+/// STEP 60 root cause (Problem 1 — corrupted content): Step 59 added
+/// Unicode-text support by reading a font file straight off the device's
+/// `/system/fonts/` and handing its raw bytes to `PdfTrueTypeFont`. On real
+/// devices, several of those system font files are not a plain single-font
+/// `.ttf` — they're either a **TrueType Collection** (`.ttc`, multiple font
+/// faces packed behind one shared glyph table, identified by a `ttcf`
+/// magic number instead of the plain sfnt version tag) or a **variable
+/// font** (a single outline that's algorithmically reshaped for different
+/// weights via an `fvar`/`gvar` table, rather than each weight having its
+/// own fixed outline). Handing either of those straight to
+/// `PdfTrueTypeFont` — which expects one fixed, static, single-face sfnt
+/// file — makes it parse the table directory wrong: some low, universal
+/// glyph indices (digits, basic punctuation) happen to still land on
+/// roughly the right glyph, while the rest of the character-to-glyph
+/// mapping is garbage. That is exactly the reported symptom — numbers and
+/// punctuation visible, the actual question/answer letters missing. See
+/// `_looksLikeUsableSfnt` below for the fix.
 
 /// Which slice of the conversation a PDF export request covers, decided
 /// purely from the user's own phrasing (see `_detectPdfExportIntent` in
@@ -54,7 +63,8 @@ class PdfExportException implements Exception {
 }
 
 /// The result of a successful export — enough for the chat UI to render a
-/// "📄 PDF Ready" card and for `Share.shareXFiles` to open/share the file.
+/// "📄 PDF Ready" card and for `Share.shareXFiles`/a real Downloads save to
+/// use the file.
 class PdfExportResult {
   final String filePath;
   final String fileName;
@@ -99,28 +109,36 @@ class PdfExportService {
   static const int _accentB = 129;
 
   static void _log(String tag, [Object? detail]) {
-    // Step 59: every stage of the export pipeline logs unconditionally in
-    // debug builds via `debugPrint` (a no-op in release builds), so a real
+    // Every stage of the export pipeline logs unconditionally in debug
+    // builds via `debugPrint` (a no-op in release builds), so a real
     // failure is always visible in Logcat instead of only showing the
     // user-facing generic message.
     debugPrint(detail == null ? '[PdfExport] $tag' : '[PdfExport] $tag: $detail');
   }
 
+  /// A short, safe-for-logs preview of [text]: length-capped and with
+  /// newlines collapsed, so a long AI answer doesn't flood Logcat but its
+  /// actual content is still visible for comparison against what's shown
+  /// in the chat bubble.
+  static String _preview(String text) {
+    final flat = text.replaceAll('\n', ' \u23CE ');
+    return flat.length <= 160 ? flat : '${flat.substring(0, 160)}…';
+  }
+
   // ---------------------------------------------------------------------
-  // STEP 59 — Unicode font support.
+  // STEP 60 — Unicode font support, hardened.
   //
-  // `PdfStandardFont` can only encode WinAnsi/Latin-1 text. Pak AI's chat
-  // replies can contain Urdu-script (or other non-Latin) characters, and
-  // handing those to a standard font is exactly the kind of thing that
-  // throws deep inside Syncfusion's layout engine. There is no bundled
-  // Unicode font already in this project (nothing under `assets/`, no
-  // `fonts:` section in `pubspec.yaml`), and this fix intentionally does
-  // NOT add a new package/dependency or a network fetch — so instead this
-  // reads a Unicode-capable TrueType font that Android already ships
-  // on-device for its own Arabic/Urdu system-locale support. This keeps
-  // the feature 100% local/free with zero new dependencies. If none of
-  // these paths exist on a given device (e.g. some custom ROMs, iOS, or a
-  // desktop/debug build), export still proceeds — see `_fontFor` below.
+  // `PdfStandardFont` can only encode WinAnsi/Latin-1 text, so Urdu-script
+  // answers need a real Unicode (TrueType) font. Step 59 read one straight
+  // from the device's `/system/fonts/`, which is what corrupted the
+  // output (see the class doc comment above for the exact mechanism).
+  // Step 60 keeps the same "no new asset, no network, fully local/free"
+  // approach — it just validates a candidate font file before trusting it:
+  // reject anything that isn't a plain, static, single-face sfnt file, and
+  // reject a font whose measurements come back nonsensical after loading.
+  // Nothing here removes Urdu support — every candidate is still tried,
+  // and only a file that actually fails validation is skipped in favor of
+  // the next one.
   // ---------------------------------------------------------------------
   static const List<String> _systemUnicodeFontPaths = [
     '/system/fonts/NotoNaskhArabic-Regular.ttf',
@@ -131,32 +149,134 @@ class PdfExportService {
     '/system/fonts/NotoNastaliqUrdu.ttf',
     '/system/fonts/NotoSansUrdu-Regular.ttf',
     '/system/fonts/NotoSansSymbols-Regular-Subsetted.ttf',
+    '/system/fonts/NotoSansSymbols2-Regular.ttf',
+    '/system/fonts/DroidSansFallback.ttf',
+    '/system/fonts/DroidNaskh-Regular.ttf',
   ];
 
-  static List<int>? _cachedUnicodeFontBytes;
+  static PdfFont? _cachedUnicodeFont;
   static bool _unicodeFontLookupDone = false;
 
-  /// Returns raw TrueType bytes for a Unicode font found on-device, or
-  /// `null` if none of the known system font paths exist/are readable.
-  /// Result is cached for the lifetime of the isolate — this only touches
-  /// disk once per app run.
-  static List<int>? _findSystemUnicodeFontBytes() {
-    if (_unicodeFontLookupDone) return _cachedUnicodeFontBytes;
+  /// `ttcf` — the magic number at the start of a **TrueType Collection**
+  /// file (several font faces sharing one glyph table). `PdfTrueTypeFont`
+  /// expects a single-face sfnt, not a collection, so any file starting
+  /// with this must be rejected rather than passed straight through.
+  static const List<int> _ttcMagic = [0x74, 0x74, 0x63, 0x66];
+
+  /// The four sfnt "version" tags a plain, single-face TrueType/OpenType
+  /// file is allowed to start with.
+  static bool _hasPlainSfntVersion(List<int> bytes) {
+    if (bytes.length < 4) return false;
+    // 0x00010000 — the standard TrueType version tag.
+    if (bytes[0] == 0x00 && bytes[1] == 0x01 && bytes[2] == 0x00 && bytes[3] == 0x00) {
+      return true;
+    }
+    // 'true' / 'OTTO' — the Apple-TrueType and OpenType/CFF version tags.
+    final tag = String.fromCharCodes(bytes.sublist(0, 4));
+    return tag == 'true' || tag == 'OTTO';
+  }
+
+  /// True if [bytes] starts with the `ttcf` collection magic number —
+  /// i.e. this is a multi-face collection file, not a single font.
+  static bool _isTrueTypeCollection(List<int> bytes) {
+    if (bytes.length < 4) return false;
+    for (var i = 0; i < 4; i++) {
+      if (bytes[i] != _ttcMagic[i]) return false;
+    }
+    return true;
+  }
+
+  /// Scans the sfnt table directory for an `fvar` table — the marker of a
+  /// **variable font** (one outline reshaped per-weight at render time,
+  /// rather than each weight being its own fixed outline). Older/embedded
+  /// TrueType parsers — including Syncfusion's — are known to mis-resolve
+  /// glyph outlines for these, which is the second class of file that
+  /// produces exactly the "scattered digits/punctuation, missing letters"
+  /// corruption this step fixes.
+  static bool _hasVariableFontTable(List<int> bytes) {
+    try {
+      if (bytes.length < 12) return false;
+      final numTables = (bytes[4] << 8) | bytes[5];
+      const recordSize = 16;
+      const directoryStart = 12;
+      for (var i = 0; i < numTables; i++) {
+        final recordStart = directoryStart + i * recordSize;
+        if (recordStart + 4 > bytes.length) break;
+        final tag = String.fromCharCodes(bytes.sublist(recordStart, recordStart + 4));
+        if (tag == 'fvar') return true;
+      }
+      return false;
+    } catch (_) {
+      // Malformed enough that we can't even read the table directory —
+      // treat as unusable rather than risk it.
+      return true;
+    }
+  }
+
+  /// True if [bytes] is safe to hand to `PdfTrueTypeFont`: a plain,
+  /// static, single-face sfnt file. Rejects TrueType Collections and
+  /// variable fonts (see the two checks above) — those are what actually
+  /// corrupted Step 59's output on real devices.
+  static bool _looksLikeUsableSfnt(List<int> bytes) {
+    if (_isTrueTypeCollection(bytes)) return false;
+    if (!_hasPlainSfntVersion(bytes)) return false;
+    if (_hasVariableFontTable(bytes)) return false;
+    return true;
+  }
+
+  /// Builds a `PdfTrueTypeFont` from [bytes] and sanity-checks it by
+  /// measuring a known short string — if the measured width comes back
+  /// zero/negative or wildly disproportionate, the font loaded "silently
+  /// wrong" (rather than throwing) and must not be trusted. Never throws;
+  /// returns `null` on any failure so the caller can try the next
+  /// candidate instead of producing corrupted output.
+  static PdfFont? _tryBuildAndVerifyFont(List<int> bytes, String path) {
+    try {
+      final font = PdfTrueTypeFont(bytes, 12);
+      const probe = 'Aa0 .,';
+      final size = font.measureString(probe);
+      if (size.width <= 0 || size.width > 200 || size.height <= 0) {
+        _log('PDF_EXPORT_UNICODE_FONT_MEASURE_SUSPICIOUS', '$path -> $size');
+        return null;
+      }
+      _log('PDF_EXPORT_UNICODE_FONT_VERIFIED', path);
+      return font;
+    } catch (e) {
+      _log('PDF_EXPORT_UNICODE_FONT_LOAD_FAILED', '$path -> $e');
+      return null;
+    }
+  }
+
+  /// Finds and validates a Unicode-capable font from the device's own
+  /// system fonts, trying every candidate path until one both parses as a
+  /// plain sfnt file (see `_looksLikeUsableSfnt`) and measures sane text.
+  /// Cached for the lifetime of the isolate.
+  static PdfFont? _findSystemUnicodeFont() {
+    if (_unicodeFontLookupDone) return _cachedUnicodeFont;
     _unicodeFontLookupDone = true;
     for (final path in _systemUnicodeFontPaths) {
       try {
         final file = File(path);
-        if (file.existsSync()) {
-          _cachedUnicodeFontBytes = file.readAsBytesSync();
+        if (!file.existsSync()) continue;
+        final bytes = file.readAsBytesSync();
+        if (!_looksLikeUsableSfnt(bytes)) {
+          _log('PDF_EXPORT_UNICODE_FONT_REJECTED', '$path (collection/variable font)');
+          continue;
+        }
+        final font = _tryBuildAndVerifyFont(bytes, path);
+        if (font != null) {
+          _cachedUnicodeFont = font;
           _log('PDF_EXPORT_UNICODE_FONT_FOUND', path);
-          return _cachedUnicodeFontBytes;
+          return font;
         }
       } catch (e) {
-        // Unreadable/permission-denied on this path — try the next one.
         _log('PDF_EXPORT_UNICODE_FONT_PATH_FAILED', '$path -> $e');
       }
     }
-    _log('PDF_EXPORT_UNICODE_FONT_NOT_FOUND');
+    _log('PDF_EXPORT_UNICODE_FONT_UNAVAILABLE',
+        'no usable on-device Unicode font found — Latin text is unaffected; '
+        'non-Latin characters will fall back to the standard font '
+        '(may show as missing glyphs, never corrupted/scattered ones).');
     return null;
   }
 
@@ -170,45 +290,54 @@ class PdfExportService {
     return false;
   }
 
-  /// Picks the right font for [text]: a Unicode TrueType font (from the
-  /// device's own system fonts) when [text] contains non-Latin characters
-  /// and one is available, otherwise the existing standard Helvetica font.
-  /// Never throws — falls back to [standardFont] on any font-loading
-  /// failure so a single bad file read can't take down the whole export.
-  static PdfFont _fontFor(
-    String text, {
-    required PdfFont standardFont,
-    required double size,
-    required bool bold,
-  }) {
+  /// Picks the right font for [text]: the validated on-device Unicode font
+  /// when [text] contains non-Latin characters and one passed validation,
+  /// otherwise the existing standard Helvetica font. Never throws.
+  static PdfFont _fontFor(String text, PdfFont standardFont) {
     if (!_needsUnicodeFont(text)) return standardFont;
-    final bytes = _findSystemUnicodeFontBytes();
-    if (bytes == null) return standardFont;
+    return _findSystemUnicodeFont() ?? standardFont;
+  }
+
+  /// Draws [text] with [font], and — only if that specific draw throws —
+  /// retries once with [fallbackFont]. This is a last-resort safety net so
+  /// one bad block can't blank out the rest of the document; it never
+  /// silently drops the text itself, only ever swaps the font, and always
+  /// logs when it happens.
+  static PdfLayoutResult _drawTextSafely({
+    required String label,
+    required String text,
+    required PdfFont font,
+    required PdfFont fallbackFont,
+    required PdfPage page,
+    required Rect bounds,
+    required PdfLayoutFormat format,
+    PdfBrush? brush,
+  }) {
     try {
-      return PdfTrueTypeFont(
-        bytes,
-        size,
-        style: bold ? PdfFontStyle.bold : PdfFontStyle.regular,
-      );
-    } catch (e) {
-      _log('PDF_EXPORT_UNICODE_FONT_LOAD_FAILED', e);
-      return standardFont;
+      return PdfTextElement(text: text, font: font, brush: brush).draw(
+        page: page,
+        bounds: bounds,
+        format: format,
+      )!;
+    } catch (e, stackTrace) {
+      _log('PDF_EXPORT_TEXT_DRAW_FAILED', '$label -> $e');
+      _log('PDF_EXPORT_TEXT_DRAW_STACKTRACE', stackTrace);
+      return PdfTextElement(text: text, font: fallbackFont, brush: brush).draw(
+        page: page,
+        bounds: bounds,
+        format: format,
+      )!;
     }
   }
 
   /// Builds a real, selectable-text PDF from [pairs] and saves it inside the
   /// app's own documents directory (`<app docs>/pak_ai_exports/`) — no
-  /// public-Downloads/MediaStore write is attempted, since that's the
-  /// unreliable part under modern Android scoped storage; the chat UI's
-  /// "Open / Share" action (see `PdfExportResultCard`) hands the saved file
-  /// to the OS share sheet instead, which lets the person save it wherever
-  /// they like (Drive, Files, a PDF viewer's own "Save a copy", etc.) — the
-  /// safest supported flow given the existing project has no MediaStore/
-  /// file-picker-save plugin.
+  /// public-Downloads/MediaStore write happens here; that's a separate,
+  /// explicit user action (see `PdfExportResultCard`'s "Download PDF").
   ///
   /// Throws [PdfExportException] with an already user-friendly message on
   /// any failure — empty input, a generation error, or a file-system error.
-  /// The real exception + stack trace are always logged first (Step 59).
+  /// The real exception + stack trace are always logged first.
   static Future<PdfExportResult> generate({
     required List<PdfQaPair> pairs,
     required PdfExportScope scope,
@@ -218,13 +347,25 @@ class PdfExportService {
     final cleanPairs = pairs
         .where((p) => p.question.trim().isNotEmpty && p.answer.trim().isNotEmpty)
         .toList(growable: false);
-    _log('PDF_EXPORT_MESSAGES_COUNT', cleanPairs.length);
+    _log('PDF_EXPORT_QA_COUNT', cleanPairs.length);
 
     if (cleanPairs.isEmpty) {
       throw const PdfExportException(
         "There's no conversation yet to turn into a PDF — ask me something "
         'first, then try again.',
       );
+    }
+
+    // Step 60 — Part 1: log exactly what's about to be written, so a
+    // mismatch between "what's in the chat" and "what reaches the PDF
+    // service" is visible before it ever gets near the rendering code.
+    for (var i = 0; i < cleanPairs.length; i++) {
+      final p = cleanPairs[i];
+      _log('PDF_EXPORT_Q_INDEX', i);
+      _log('PDF_EXPORT_Q_TEXT', _preview(p.question));
+      _log('PDF_EXPORT_Q_LENGTH', p.question.length);
+      _log('PDF_EXPORT_A_TEXT', _preview(p.answer));
+      _log('PDF_EXPORT_A_LENGTH', p.answer.length);
     }
 
     PdfDocument? document;
@@ -289,62 +430,60 @@ class PdfExportService {
         final question = pair.question.trim();
         final answer = pair.answer.trim();
 
-        // Step 59: pick a Unicode-safe font per block whenever the text
-        // actually needs one (Urdu/Arabic script etc.) instead of always
-        // using the Latin-only standard font — this is the fix for the
-        // real, previously-swallowed exception.
-        final qLabelFont =
-            _fontFor(question, standardFont: labelFontStd, size: 12, bold: true);
-        final qBodyFont =
-            _fontFor(question, standardFont: bodyFontStd, size: 11.5, bold: false);
-        final aLabelFont =
-            _fontFor(answer, standardFont: labelFontStd, size: 12, bold: true);
-        final aBodyFont =
-            _fontFor(answer, standardFont: bodyFontStd, size: 11.5, bold: false);
+        // Step 59/60: pick a validated Unicode-safe font per block only
+        // when the text actually needs one (Urdu/Arabic script etc.).
+        final qLabelFont = _fontFor(question, labelFontStd);
+        final qBodyFont = _fontFor(question, bodyFontStd);
+        final aLabelFont = _fontFor(answer, labelFontStd);
+        final aBodyFont = _fontFor(answer, bodyFontStd);
 
-        final qLabel = PdfTextElement(
-          text: 'Question',
+        final qLabel = _drawTextSafely(
+          label: 'Q${i + 1} label',
+          text: 'Question ${i + 1}',
           font: qLabelFont,
-          brush: PdfSolidBrush(accent),
-        ).draw(
+          fallbackFont: labelFontStd,
           page: currentPage,
           bounds: Rect.fromLTWH(0, currentY, pageWidth, pageHeight),
           format: format,
-        )!;
+          brush: PdfSolidBrush(accent),
+        );
         currentPage = qLabel.page;
         currentY = qLabel.bounds.bottom + 3;
 
-        final qBody = PdfTextElement(
+        final qBody = _drawTextSafely(
+          label: 'Q${i + 1} body',
           text: question,
           font: qBodyFont,
-        ).draw(
+          fallbackFont: bodyFontStd,
           page: currentPage,
           bounds: Rect.fromLTWH(0, currentY, pageWidth, pageHeight),
           format: format,
-        )!;
+        );
         currentPage = qBody.page;
         currentY = qBody.bounds.bottom + 12;
 
-        final aLabel = PdfTextElement(
+        final aLabel = _drawTextSafely(
+          label: 'A${i + 1} label',
           text: 'Answer',
           font: aLabelFont,
-          brush: PdfSolidBrush(accent),
-        ).draw(
+          fallbackFont: labelFontStd,
           page: currentPage,
           bounds: Rect.fromLTWH(0, currentY, pageWidth, pageHeight),
           format: format,
-        )!;
+          brush: PdfSolidBrush(accent),
+        );
         currentPage = aLabel.page;
         currentY = aLabel.bounds.bottom + 3;
 
-        final aBody = PdfTextElement(
+        final aBody = _drawTextSafely(
+          label: 'A${i + 1} body',
           text: answer,
           font: aBodyFont,
-        ).draw(
+          fallbackFont: bodyFontStd,
           page: currentPage,
           bounds: Rect.fromLTWH(0, currentY, pageWidth, pageHeight),
           format: format,
-        )!;
+        );
         currentPage = aBody.page;
         currentY = aBody.bounds.bottom + 22;
 
@@ -386,7 +525,6 @@ class PdfExportService {
           "Sorry, I couldn't create the PDF. Please try again.",
         );
       }
-      _log('PDF_EXPORT_SHARE_READY', file.path);
 
       return PdfExportResult(
         filePath: file.path,
@@ -397,11 +535,6 @@ class PdfExportService {
     } on PdfExportException {
       rethrow;
     } catch (e, stackTrace) {
-      // Step 59: this used to be `catch (_)`, which threw away the real
-      // exception entirely. It is now always logged in full — both the
-      // exception and its stack trace — before the clean, generic message
-      // is shown to the user. This is the single change that makes future
-      // failures (of any kind, not just the font issue) diagnosable.
       _log('PDF_EXPORT_EXCEPTION', e.toString());
       _log('PDF_EXPORT_STACKTRACE', stackTrace);
       throw const PdfExportException(
