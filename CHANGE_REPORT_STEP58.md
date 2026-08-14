@@ -1,208 +1,138 @@
-# STEP 58 — Fix PDF Export Trigger End-to-End
+# CHANGE REPORT — STEP 58
+## Pak AI — Professional Network/Connection Error Handling
 
-## File modified
+Baseline: Step 57 (verified — Gemini quota/error handling + credit refunds intact).
+No UI redesign. No changes to the composer, send button, Pak AI header/logo, credits UI,
+Profile screen, Upgrade Plan, PDF/document features, voice features, or model selector.
 
-**Only** `lib/screens/chat_screen.dart` — nothing else. Confirmed via diff
-against the Step 55 baseline: the only differences beyond
-`chat_screen.dart` are the ones already introduced in Step 56/57 and
-untouched since (`pdf_export_service.dart`, `pdf_export_result_card.dart`,
-`chat_message.dart`, `chat_bubble.dart`, `pubspec.yaml`, plus the two
-prior change-report files).
+---
 
-## Execution-path trace (done first, before any edit)
+## 1. Files changed (4 total)
 
-Traced `_sendMessage()` end-to-end exactly as instructed:
+1. `lib/core/services/gemini_service.dart`
+2. `lib/models/chat_message.dart`
+3. `lib/widgets/chat_bubble.dart`
+4. `lib/screens/chat_screen.dart`
 
-```
-_sendMessage()
-  → text/attachments read, guards checked
-  → attachments processed (loop) — only runs when attachmentsToSend is
-    non-empty; for a plain-text message it's skipped entirely
-  → user message appended to _messages, persisted, history built
-  → if (attachmentsToSend.isEmpty) {
-        pdfScope = _detectPdfExportIntent(outgoingText)   ← FIRST check
-        if (pdfScope != null) { _runPdfExport(scope); return; }  ← Gemini
-                                                                     never
-                                                                     reached
-        if (_activeDocument != null && looksLikeDocumentFollowUp) { ... }
-        _streamAiReply(...)  ← the only Gemini call on this path
-    }
+Verified with `diff -rq` against the untouched Step 57 baseline — no other file changed.
+
+---
+
+## 2. The bug
+
+The screenshot in the brief came from `GeminiService`'s outer `catch (e)` blocks, which built
+the exception message by string-interpolating the raw caught object directly:
+
+```dart
+throw GeminiException('Could not reach Gemini: $e');
 ```
 
-This confirms the control-flow guarantee the task asked for is already
-structurally correct and was already correct as of Step 57:
-`_detectPdfExportIntent` runs first, and returning a non-null scope
-`return`s out of `_sendMessage()` immediately after handing off to
-`_runPdfExport` — the `_streamAiReply(...)` call that talks to Gemini is
-unreachable on that code path. **There is no ordering bug and no
-Gemini-bypass bug in the flow itself.**
+When `e` was a dropped/failed HTTP connection (`http.ClientException`), `$e` expanded to the
+full `ClientException` `toString()` — including the exception class name, the reason
+("Connection closed before full header was received"), and the **full request URI**
+(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:streamGenerateContent?alt=sse`).
+This string flowed, untouched, all the way to `ChatBubble` because every downstream catch site
+(`chat_screen.dart`, `TextRecognitionService`, `DocumentIntelligenceService`) just displays
+`GeminiException.message` verbatim — so the fix had to happen at the source, once.
 
-There are also no other send paths that could have skipped this check for
-a first-time plain-text message — `_regenerateResponse`/
-`_retryLastMessage` (the only other call sites that reach
-`_streamAiReply`/Gemini) are both re-ask/retry actions on an *existing*
-message pair, not a new user send, so they're unrelated to the reported
-scenario.
+The same pattern existed in `sendMessageStream`'s outer catch.
 
-## What was actually broken
+---
 
-With the flow confirmed correct, the remaining explanation is detector
-**precision** — and re-testing the exact phrase from this step's bug
-report against Step 57's detector by hand turned up a real, confirmed
-defect, plus one more found while stress-testing this step's new FAIL
-list:
+## 3. Centralized classification (`GeminiService`)
 
-1. **The reported phrase itself.** `"is conversation ko PDF bana do"`
-   contains `"bana"`, which Step 57's `\bbana\w*` wildcard does match — so
-   on paper this exact phrase should already have worked in Step 57. The
-   wildcard's imprecision, however, is a real, demonstrable bug in the
-   *general* sense the task is pointing at: `\bbana\w*` matches *any* word
-   starting with "bana", including non-command conjugations. Concretely,
-   this step's own required FAIL case **`"PDF kaise banate hain?"`**
-   ("how do they make PDFs" — a genuine question, not a command) contains
-   `"banate"`, which the Step 57 wildcard **would have incorrectly
-   matched and triggered export for** — the exact same class of bug as
-   the reported failure, just the false-positive mirror image of it.
-   Fixed by replacing the open-ended wildcard with an exact set of
-   imperative forms (`bana`, `banao`, `banade`, `banado`, `banaden`,
-   `banadein`, `bnado`, `bna`, `bnao`, `bnade`) — "banate" isn't one of
-   them, so it no longer matches, while every real imperative still does.
+**`GeminiErrorKind` (new enum):** `quota | network | api | unknown`. `GeminiException` now
+carries a `kind` (auto-derived from `isQuotaError` when not passed explicitly, so every existing
+call site keeps working unchanged) plus a new `isNetworkError` getter. `isQuotaError` itself is
+untouched — Step 57's quota behavior is preserved exactly.
 
-2. **A second, newly-introduced false positive found while testing this
-   step's own examples.** Step 57 let strong verbs (including English
-   `convert`/`export`/`download`/`generate`) bypass the
-   question-opener guard entirely. This step's required FAIL case
-   **`"What is PDF export?"`** contains the word `"export"` used as a
-   noun (the feature name), not a command — Step 57's logic would have
-   incorrectly triggered export for it. Fixed by moving **every** English
-   verb (`convert`/`export`/`download`/`generate`/`make`/`create`/`save`)
-   behind the same question-opener guard `make`/`create`/`save` already
-   had — only the Roman Urdu imperatives (which don't realistically occur
-   inside a question at all) now bypass that guard.
+**`GeminiService._classifyThrownError(Object error)` (new, private):** the single place that
+turns an arbitrary *thrown* exception into a clean `GeminiException`. It never echoes any part
+of the caught error into the message — it only pattern-matches the error's type/description
+against a fixed list of network-failure signatures (`ClientException`, `SocketException`,
+`HttpException`, `HandshakeException`, "connection closed/reset/refused/aborted", "failed host
+lookup", "network unreachable", "OS error") to decide the `kind`:
+- Matches (or a `TimeoutException`) → `GeminiErrorKind.network`, with the standard copy below.
+- No match → `GeminiErrorKind.unknown`, with a generic "Something went wrong while processing
+  your request. Please try again." — still never `error.toString()`.
 
-3. **Missing Roman Urdu forms this step explicitly requires.** Step 57's
-   detector had no coverage for the bare `bna` stem (only `bnado`),
-   `de dein`, `kr do`/`krdo` (short forms of `kar do`/`kardo`), or dotted
-   `p.d.f.` — all listed as required variations in this step's spec.
-   Added all of them.
+**`GeminiService._networkConnectionError()` (new, private):** returns the one standard
+connection-problem exception:
+> "Couldn't connect to Pak AI. Please check your internet connection and try again."
 
-Given the reported literal phrase mathematically should have matched
-Step 57's logic, and the flow trace above shows nothing else in the code
-could have swallowed it, the most likely remaining explanation for what
-was actually observed on the real device is a **stale/incomplete build**
-rather than a logic bug — this project's own history (phone-only
-workflow, uploading to GitHub via the mobile app, which has previously
-flattened the Flutter folder structure on upload) is a known, plausible
-way for a build to not actually contain the latest `chat_screen.dart`.
-This can't be confirmed or ruled out from static code review alone. The
-debug logging added below is specifically meant to settle this
-empirically on the next real-device test.
+**`GeminiService._friendlyApiError(statusCode, body)` (updated):** quota detection (HTTP 429 /
+`RESOURCE_EXHAUSTED`) is unchanged from Step 57. Every other non-200 status (400/403/500/502/503,
+unexpected shapes, etc.) now collapses to one generic, professional message — "We couldn't
+complete your request. Please try again." — instead of the previous status-code-specific text,
+so no status code, endpoint, or API-rejection detail is ever implied to the user.
 
-## The fix
+**Applied in both request paths**, so both are covered per the Step 58 brief:
+- `sendMessage` (non-streaming `generateContent`): its `on TimeoutException` and trailing
+  `catch (e)` now call `_networkConnectionError()` / `_classifyThrownError(e)` instead of
+  interpolating `$e`.
+- `sendMessageStream` (`streamGenerateContent?alt=sse`): same two catch sites updated the same
+  way. The raw stream URL can no longer reach `controller.addError(...)`, and therefore never
+  reaches `ChatBubble`.
 
-Same call site as Step 56/57 (unchanged — already correct, see trace
-above). `_detectPdfExportIntent` was tightened:
+Content-level failures that were already safe (Gemini responding but with a blocked/safety/
+empty/`MAX_TOKENS` result) were left as-is — they don't expose exception names, stack traces, or
+URLs, and keeping their specific wording ("blocked by safety filters", etc.) is more useful to
+the user than collapsing them to the generic copy.
 
-- **`_normalizeForPdfIntent`** — lowercases, trims, collapses whitespace,
-  now also folds dotted `p.d.f.` → `pdf`, and folds `Q/A`/`Q&A`/
-  `question answer(s)`/`questions and answers`/`questions answers`
-  (no "and")/`sawal jawab` → one canonical `qa` token.
-- **`hasImperativeUrdu`** — an *exact* alternation of real imperative
-  forms (`bana|banao|banade|banado|banaden|banadein|bnado|bna|bnao|
-  bnade`), plus `de do`/`de dein`/`de den`/`dedo` and `kar do`/`kr do`/
-  `kardo`/`krdo`. These bypass the question-opener guard, since none of
-  them realistically appear in a genuine question about PDFs.
-- **`hasEnglishVerb`** — `convert`/`export`/`download`/`generate`/`make`/
-  `create`/`save`, all gated by the same `isQuestionAboutPdf` check
-  (message doesn't open with what/how/why/when/where/which/who/explain/
-  define/tell me).
-- `triggered = hasImperativeUrdu || (hasEnglishVerb && !isQuestionAboutPdf)`.
+---
 
-Scope detection (current Q&A / all Q&A / whole conversation) is
-unchanged from Step 57 — bare `chat`/`conversation` mentions still select
-the full-conversation scope, matching this step's `"is conversation ko
-PDF bana do"` → export the current conversation's Q&A.
+## 4. UI layer (`ChatMessage` + `ChatBubble`)
 
-## Debug logging (temporary, per this step's requested format)
+- `ChatMessage` gained an `isNetworkError` field (defaults to `false`; safe default for old
+  saved history, same pattern as Step 57's `isQuotaError`).
+- `ChatBubble`'s existing error-bubble header — same container, icon slot, and typography as
+  before — now picks its title from three states instead of two:
+  - `isQuotaError` → **"Pak AI is temporarily busy"** (unchanged, hourglass icon, unchanged).
+  - `isNetworkError` → **"Connection problem"** (new; reuses the existing error icon).
+  - otherwise → **"Something went wrong"** (unchanged).
+- Only the title text branch was touched. No new widget, no new styling, no icon changes beyond
+  what Step 57 already had.
 
-`_kDebugPdfIntent = true` gates exactly the lines requested:
+---
 
-```
-PDF_INTENT_INPUT: <normalized text>
-PDF_INTENT_DETECTED: true|false
-PDF_INTENT_ACTION: export        (only printed when detected)
-PDF_GEMINI_BYPASS: true|false
-```
+## 5. `chat_screen.dart`
 
-plus one extra diagnostic line in `_runPdfExport` (`PDF_INTENT_ACTION:
-generating scope=... priorPairs=... selectedPairs=...`) to catch the
-separate edge case of detection firing correctly but there being no
-prior Q&A yet to export. Left **on** in this delivery so the next
-real-device/logcat test can show definitively whether the detector fires
-— if `PDF_INTENT_INPUT`/`PDF_INTENT_DETECTED` lines don't appear in
-logcat at all for a plain-text send, that confirms this build doesn't
-contain this code (the stale-build explanation above), rather than a
-remaining logic bug. Flip `_kDebugPdfIntent` to `false`, or delete the
-`debugPrint` call sites and the constant, once confirmed.
+Every site that turns a caught `GeminiException` (or, in the streaming path, an `Object`) into
+an error `ChatMessage` now also passes `isNetworkError` through:
 
-## Confirmation: PDF intent is intercepted before Gemini
+- Main image/attachment send (`_sendMessage`'s `on GeminiException catch (e)`).
+- `_streamAiReply`'s outer `catch (e)` — also updated its non-`GeminiException` fallback message
+  to the same "Something went wrong while processing your request. Please try again." wording
+  used elsewhere, since (now that `GeminiService` always throws/emits a classified
+  `GeminiException`) that branch only exists as a last-resort safety net.
+- Voice AI reply (`_appendVoiceReplyError`, plus its `on GeminiException catch (e)` call site).
 
-Unchanged from Step 57 and re-confirmed by the trace above: the check
-runs first inside `if (attachmentsToSend.isEmpty)`, and a detected scope
-`return`s immediately after `_runPdfExport`, before the
-`_streamAiReply(...)` call. Structurally impossible for a detected PDF
-command to reach Gemini.
+No other logic in these methods changed.
 
-## Confirmation: normal questions still go to Gemini
+---
 
-Re-verified via simulation (see Verification below) against all 8 FAIL
-phrases in this step's spec, all 6 in the Verification section, and all 7
-carried over from Step 57 — every one returns "not detected" and falls
-through unchanged to `_streamAiReply(...)`.
+## 6. Credit refund behavior (unchanged, verified)
 
-## Confirmation: unrelated features untouched
+Step 58 introduces no new failure *paths* — only reclassifies the message text/kind of
+failures that already threw/emitted a `GeminiException`. `_resolvePendingCreditRefund` and its
+three call sites (main send, streaming, voice reply) are untouched:
+- A network failure still refunds exactly once, the same way a quota or other API failure
+  already did in Step 57 (the credit deduction happens before the Gemini request; refund is
+  keyed off `_pendingCreditRefund`, cleared the instant it's resolved either way).
+- A successful reply is never refunded.
+- Rewarded-ad credits and the subscription/credit architecture are untouched.
 
-No other file changed (see diff above). Within `chat_screen.dart`, only
-the `_detectPdfExportIntent`/`_normalizeForPdfIntent`/`_kDebugPdfIntent`
-block and one debug line inside `_runPdfExport` were touched — the
-`_sendMessage()` call site, `_extractQaPairs`, the rest of `_runPdfExport`,
-Light/Dark Mode, the input bar, chat bubbles, the attachment sheet, the
-existing PDF reading/extraction feature, navigation, drawer, settings,
-history, and the existing PDF result card design are all unchanged.
+---
 
-## Verification performed
+## 7. What a user sees now
 
-No local Flutter/Android SDK is available in this environment — as with
-every prior step, `flutter analyze`/`flutter build` was **not** run and
-its result is not claimed. Verification was:
+| Failure | Title | Message |
+|---|---|---|
+| Dropped connection / no internet / DNS failure / timeout (either request path) | Connection problem | Couldn't connect to Pak AI. Please check your internet connection and try again. |
+| HTTP 429 / `RESOURCE_EXHAUSTED` | Pak AI is temporarily busy | Please wait a little and try again. |
+| Any other non-200 Gemini/API response | Something went wrong | We couldn't complete your request. Please try again. |
+| Any other unclassified exception | Something went wrong | Something went wrong while processing your request. Please try again. |
 
-- Full diff against the Step 55 baseline confirming only
-  `chat_screen.dart` changed relative to the Step 57 delivery.
-- Brace/paren/bracket balance check on the modified file — balanced.
-- The exact new regex/normalization logic re-implemented in Python and
-  run against **every** PASS/FAIL list from this step's spec (16 PASS +
-  8 FAIL from the main list, 10 PASS + 6 FAIL from the Verification
-  section) **and** re-run against every PASS/FAIL phrase from the Step
-  56 and Step 57 specs, to guard against regressions. All 73 cases across
-  all four historical + current suites pass:
-  - Step 58 "must trigger" list: 16/16 correct
-  - Step 58 "must NOT trigger" list: 8/8 correct (this run is what caught
-    and fixed the `"What is PDF export?"` false positive described above)
-  - Step 58 Verification PASS/FAIL lists: 16/16 correct
-  - Step 57 PASS/FAIL lists (regression check): 32/32 correct
-  - Step 56 PASS/FAIL examples (regression check): 13/13 correct
-
-## Limitations
-
-- This remains a local regex/keyword-based heuristic, not a full NLU
-  parser, consistent with the rest of the project's existing smart-intent
-  routing (Step 40/42) — an unusual phrasing with no recognizable
-  imperative or verb token will still fall through to a normal chat
-  reply.
-- As stated above, if the reported phrase still doesn't trigger after
-  this update, the debug logging is specifically there to distinguish "no
-  `PDF_INTENT_INPUT` line appears at all" (stale/incomplete build — check
-  what actually landed in the repo/APK for this file) from "the line
-  appears but `PDF_INTENT_DETECTED` is false" (a genuine remaining
-  detector gap, at which point the exact failing phrase is needed to fix
-  it precisely rather than guessing at more variations).
+No raw exception class name, URI/URL, endpoint, model name, or stack trace can reach any of
+these bubbles — verified by tracing every `GeminiException` construction site in
+`gemini_service.dart` (the only file that builds one from something outside the app's control).

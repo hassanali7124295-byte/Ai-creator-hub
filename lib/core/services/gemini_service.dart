@@ -3,6 +3,20 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+/// Step 58 — Professional Network/Connection Error Handling: the coarse
+/// category behind every [GeminiException], so a downstream screen (e.g.
+/// `ChatBubble`) can pick the right title/copy without ever inspecting
+/// exception internals itself.
+///
+/// - [quota]: Gemini/Google rate-limited or exhausted quota (HTTP 429, or
+///   a body reporting `RESOURCE_EXHAUSTED`).
+/// - [network]: the request never reached/completed with Gemini at all —
+///   no internet, DNS failure, dropped/reset connection, timeout, etc.
+/// - [api]: Gemini/Google responded, but with a failure (bad request,
+///   rejected auth, server error, empty/blocked response, ...).
+/// - [unknown]: any other unexpected failure.
+enum GeminiErrorKind { quota, network, api, unknown }
+
 /// Thrown when the Gemini API call fails for any reason (network,
 /// bad response shape, non-200 status, missing API key, etc.).
 ///
@@ -14,10 +28,32 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// the failure was specifically a quota/rate-limit response (HTTP 429,
 /// or a body reporting `RESOURCE_EXHAUSTED`), so callers can show a
 /// dedicated "temporarily busy" retry state instead of a generic error.
+///
+/// Step 58 — Professional Network/Connection Error Handling: [kind]
+/// generalizes [isQuotaError] into the full [GeminiErrorKind]
+/// classification. [message] is, without exception, always a short,
+/// user-safe sentence — never a raw exception's `toString()`, a URL/URI,
+/// a model name, or an HTTP response body. See
+/// [GeminiService._classifyThrownError] (thrown platform/network
+/// exceptions) and [GeminiService._friendlyApiError] (non-200 HTTP
+/// responses) — the only two places a [GeminiException] is constructed
+/// from something outside this app's own control, so there is exactly
+/// one spot for each that decides what's safe to show.
 class GeminiException implements Exception {
   final String message;
   final bool isQuotaError;
-  GeminiException(this.message, {this.isQuotaError = false});
+  final GeminiErrorKind kind;
+
+  GeminiException(
+    this.message, {
+    this.isQuotaError = false,
+    GeminiErrorKind? kind,
+  }) : kind = kind ?? (isQuotaError ? GeminiErrorKind.quota : GeminiErrorKind.api);
+
+  /// True when this failure means the request never reached/completed
+  /// with Gemini — no internet, DNS failure, dropped connection, timeout,
+  /// etc. — as opposed to Gemini itself responding with a failure.
+  bool get isNetworkError => kind == GeminiErrorKind.network;
 
   @override
   String toString() => message;
@@ -181,11 +217,7 @@ Current date and time:
   // like `quotaMetric`, `quotaValue`, `quotaDimensions`, and `RetryInfo`)
   // is inspected only to classify the failure and is never echoed back
   // into the returned message.
-  static GeminiException _friendlyApiError(
-    int statusCode,
-    String body, {
-    bool hasAttachments = false,
-  }) {
+  static GeminiException _friendlyApiError(int statusCode, String body) {
     // Google returns HTTP 429 for rate-limit/quota errors; some quota
     // failures also surface the gRPC status name `RESOURCE_EXHAUSTED` in
     // the body even when wrapped differently. Either signal is treated
@@ -198,22 +230,65 @@ Current date and time:
       );
     }
 
-    if (statusCode == 400 || statusCode == 403) {
-      return GeminiException(
-        hasAttachments
-            ? 'Gemini rejected the request — it may not support this file type. '
-                'Double-check the API key in Settings, or try a different file.'
-            : 'Gemini rejected the request ($statusCode). '
-                'Double-check the API key in Settings.',
-      );
-    }
+    // Step 58: every other non-200 status (400/403/500/502/503,
+    // unexpected shapes, etc.) collapses to one professional, generic
+    // "api" failure — never the raw status code, response body, or any
+    // other hint about what Google's API rejected and why.
+    return GeminiException("We couldn't complete your request. Please try again.");
+  }
 
-    // Any other non-200 status (500/502/503, unexpected shapes, etc.) —
-    // a short, generic message; never the raw response body.
+  // Step 58 — Professional Network/Connection Error Handling: the single
+  // place that turns an arbitrary *thrown* Dart/platform exception (as
+  // opposed to a non-200 HTTP response, which [_friendlyApiError] already
+  // handles) into a clean, typed [GeminiException]. Used by the outer
+  // `catch (e)` in both the plain and streaming request paths, so a
+  // dropped connection, DNS failure, or any other transport-level error
+  // never reaches the UI as `e.toString()` (which is exactly how the
+  // "ClientException: Connection closed before full header was
+  // received, uri=https://generativelanguage.googleapis.com/..." message
+  // used to leak through).
+  //
+  // Classification is done by pattern-matching the *type/description* of
+  // the incoming exception — never by echoing any part of it back into
+  // the returned message — so the host, model name, endpoint, and
+  // exception class name are never exposed, no matter what the
+  // underlying error says.
+  static const List<String> _networkErrorSignatures = [
+    'clientexception',
+    'socketexception',
+    'httpexception',
+    'handshakeexception',
+    'connection closed',
+    'connection reset',
+    'connection refused',
+    'connection abort',
+    'connection terminated',
+    'failed host lookup',
+    'network is unreachable',
+    'network unreachable',
+    'os error',
+  ];
+
+  static GeminiException _classifyThrownError(Object error) {
+    if (error is TimeoutException) return _networkConnectionError();
+
+    final description = error.toString().toLowerCase();
+    final looksLikeNetworkFailure =
+        _networkErrorSignatures.any(description.contains);
+    if (looksLikeNetworkFailure) return _networkConnectionError();
+
+    // Anything else unrecognized — still never `error.toString()`.
     return GeminiException(
-      'Pak AI could not complete this request. Please try again in a moment.',
+      'Something went wrong while processing your request. Please try again.',
+      kind: GeminiErrorKind.unknown,
     );
   }
+
+  static GeminiException _networkConnectionError() => GeminiException(
+        "Couldn't connect to Pak AI. Please check your internet connection "
+        'and try again.',
+        kind: GeminiErrorKind.network,
+      );
 
   /// Sends [prompt] to Gemini and returns the model's text reply.
   ///
@@ -312,11 +387,7 @@ Current date and time:
           .timeout(requestTimeout);
 
       if (response.statusCode != 200) {
-        throw _friendlyApiError(
-          response.statusCode,
-          response.body,
-          hasAttachments: attachments.isNotEmpty,
-        );
+        throw _friendlyApiError(response.statusCode, response.body);
       }
 
       final decoded = jsonDecode(response.body) as Map<String, dynamic>;
@@ -356,17 +427,15 @@ Current date and time:
 
       return text.trim();
     } on TimeoutException {
-      throw GeminiException(
-        hasImageAttachment
-            ? 'Gemini is taking too long to analyze these images. Check your '
-                'connection and try again with fewer or smaller images.'
-            : 'Gemini is taking too long to respond. Check your connection and '
-                'try again — large files may need a smaller attachment.',
-      );
+      // Step 58: a request that never completed in time is a connectivity
+      // problem from the user's point of view — same clean "Connection
+      // problem" copy as any other network failure, regardless of
+      // whether it carried image attachments.
+      throw _networkConnectionError();
     } on GeminiException {
       rethrow;
     } catch (e) {
-      throw GeminiException('Could not reach Gemini: $e');
+      throw _classifyThrownError(e);
     }
   }
 
@@ -520,10 +589,9 @@ Current date and time:
           }
         }
       } on TimeoutException {
-        controller.addError(GeminiException(
-          'Gemini is taking too long to respond. Check your connection and '
-          'try again.',
-        ));
+        // Step 58: same "Connection problem" classification as the
+        // non-streaming path — see [GeminiService._networkConnectionError].
+        controller.addError(_networkConnectionError());
       } on GeminiException catch (e) {
         controller.addError(e);
       } catch (e) {
@@ -531,8 +599,13 @@ Current date and time:
         // out from under this loop, which surfaces here as a generic
         // error — swallow it silently rather than reporting a spurious
         // failure for what was actually a deliberate Stop tap.
+        //
+        // Step 58: any other genuine failure is classified the same way
+        // as the non-streaming path — never `e.toString()` — so the raw
+        // stream URL (`streamGenerateContent?alt=sse`) can never reach
+        // `ChatBubble`.
         if (!controller.isClosed) {
-          controller.addError(GeminiException('Could not reach Gemini: $e'));
+          controller.addError(_classifyThrownError(e));
         }
       } finally {
         client?.close();

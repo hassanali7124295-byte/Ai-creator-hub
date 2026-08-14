@@ -16,6 +16,17 @@ class ChatMessage {
   /// `fromJson` below).
   final bool isQuotaError;
 
+  /// Step 58 — Professional Network/Connection Error Handling: set only
+  /// on an [isError] message produced by a connectivity failure (no
+  /// internet, dropped connection, DNS failure, timeout, etc. — see
+  /// `GeminiException.isNetworkError`). Lets `ChatBubble` show the
+  /// dedicated "Connection problem" bubble instead of the generic
+  /// "Something went wrong" one. Always `false` for every other message,
+  /// including older saved history (see `fromJson` below), and mutually
+  /// exclusive with [isQuotaError] in practice (a `GeminiException` is
+  /// only ever one [GeminiErrorKind] at a time).
+  final bool isNetworkError;
+
   /// Step 40 — Chat-Native Intelligence UX Refactor: an optional, already-
   /// serialized `DocumentIntelligenceResult` (see
   /// `DocumentIntelligenceResult.toJson`/`.fromJson`) attached to an
@@ -36,6 +47,7 @@ class ChatMessage {
     this.attachments = const [],
     this.documentResult,
     this.isQuotaError = false,
+    this.isNetworkError = false,
   }) : timestamp = timestamp ?? DateTime.now();
 
   Map<String, dynamic> toJson() => {
@@ -47,6 +59,7 @@ class ChatMessage {
           'attachments': attachments.map((a) => a.toJson()).toList(),
         if (documentResult != null) 'documentResult': documentResult,
         if (isQuotaError) 'isQuotaError': isQuotaError,
+        if (isNetworkError) 'isNetworkError': isNetworkError,
       };
 
   // `attachments` is a new field as of Step 9 — history saved by earlier
@@ -67,5 +80,6 @@ class ChatMessage {
             const [],
         documentResult: json['documentResult'] as Map<String, dynamic>?,
         isQuotaError: json['isQuotaError'] as bool? ?? false,
+        isNetworkError: json['isNetworkError'] as bool? ?? false,
       );
 }

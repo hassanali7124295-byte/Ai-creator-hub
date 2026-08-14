@@ -963,6 +963,7 @@ class _ChatScreenState extends State<ChatScreen> {
             isUser: false,
             isError: true,
             isQuotaError: e.isQuotaError,
+            isNetworkError: e.isNetworkError,
           ),
         );
       });
@@ -1722,9 +1723,15 @@ class _ChatScreenState extends State<ChatScreen> {
         // the `onRetry` wiring below).
         _resolvePendingCreditRefund(refund: true);
         final isQuota = e is GeminiException && e.isQuotaError;
+        final isNetwork = e is GeminiException && e.isNetworkError;
+        // Step 58: GeminiService always surfaces a classified
+        // GeminiException now, so this generic fallback is only ever
+        // reached for a truly unexpected (non-Gemini) failure — same
+        // safe "unknown" copy as GeminiService's own fallback, never a
+        // raw exception's `toString()`.
         final message = e is GeminiException
             ? e.message
-            : 'Could not reach Pak AI. Check your connection and try again.';
+            : 'Something went wrong while processing your request. Please try again.';
         setState(() {
           if (insertIndex < _messages.length) {
             _messages[insertIndex] = ChatMessage(
@@ -1732,6 +1739,7 @@ class _ChatScreenState extends State<ChatScreen> {
               isUser: false,
               isError: true,
               isQuotaError: isQuota,
+              isNetworkError: isNetwork,
             );
           }
         });
@@ -2523,12 +2531,17 @@ class _ChatScreenState extends State<ChatScreen> {
         _smartRetryAction = null;
       });
     } on GeminiException catch (e) {
-      _appendVoiceReplyError(e.message, audioPath, isQuotaError: e.isQuotaError);
+      _appendVoiceReplyError(
+        e.message,
+        audioPath,
+        isQuotaError: e.isQuotaError,
+        isNetworkError: e.isNetworkError,
+      );
     } on AttachmentException catch (e) {
       _appendVoiceReplyError(e.message, audioPath);
     } catch (_) {
       _appendVoiceReplyError(
-        'Could not get a reply to that voice message. Please try again.',
+        'Something went wrong while processing your request. Please try again.',
         audioPath,
       );
     } finally {
@@ -2558,6 +2571,7 @@ class _ChatScreenState extends State<ChatScreen> {
     String message,
     String audioPath, {
     bool isQuotaError = false,
+    bool isNetworkError = false,
   }) {
     if (!mounted) return;
     setState(() {
@@ -2566,6 +2580,7 @@ class _ChatScreenState extends State<ChatScreen> {
         isUser: false,
         isError: true,
         isQuotaError: isQuotaError,
+        isNetworkError: isNetworkError,
       );
       _messages.add(errorMessage);
       final errorIndex = _messages.length - 1;

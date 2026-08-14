@@ -351,9 +351,15 @@ class _ChatBubbleState extends State<ChatBubble> {
                         ),
                         const SizedBox(width: 6),
                         Text(
+                          // Step 58: a connectivity failure reads as
+                          // "Connection problem" — distinct from both the
+                          // "temporarily busy" quota state and the
+                          // generic "Something went wrong" fallback.
                           message.isQuotaError
                               ? 'Pak AI is temporarily busy'
-                              : 'Something went wrong',
+                              : message.isNetworkError
+                                  ? 'Connection problem'
+                                  : 'Something went wrong',
                           style: theme.textTheme.labelSmall?.copyWith(
                             color: textColor,
                             fontWeight: FontWeight.w600,
