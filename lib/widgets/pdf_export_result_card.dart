@@ -1,23 +1,20 @@
 import 'dart:io';
-import 'dart:typed_data' show Uint8List;
 
-import 'package:file_saver/file_saver.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../core/services/pdf_download_service.dart';
 import '../core/services/pdf_export_service.dart';
 
 /// STEP 56 — renders inside an assistant `ChatBubble` in place of the
 /// normal Markdown body whenever `ChatMessage.pdfExportResult` is set.
-/// STEP 60 — "Download PDF" now performs a real save into the device's
-/// Downloads (via `file_saver`'s MediaStore-backed API) instead of only
-/// opening the share sheet; Share is kept as a separate, secondary action.
-///
-/// Deliberately small and self-contained (matches the "minimal, consistent
-/// with existing Pak AI UI" requirement) — a single icon-and-status row
-/// plus one primary action and one compact secondary action. No new
-/// screen, no change to the surrounding bubble/action-row chrome.
+/// STEP 60 — split "Download PDF" (real save) from "Share" (system sheet).
+/// STEP 61 — "Download PDF" now calls `PdfDownloadService`, a native
+/// MediaStore MethodChannel, instead of the `file_saver` package, which
+/// could not be confirmed to actually write into Android's Downloads on
+/// the real device this was tested on. Card design and the Share action
+/// are otherwise unchanged from Step 60.
 class PdfExportResultCard extends StatefulWidget {
   final PdfExportResult result;
 
@@ -29,15 +26,6 @@ class PdfExportResultCard extends StatefulWidget {
 
 class _PdfExportResultCardState extends State<PdfExportResultCard> {
   bool _busy = false;
-
-  /// The file name without its `.pdf` extension — `file_saver`'s `name`
-  /// parameter takes the base name and `ext` separately.
-  String get _baseFileName {
-    final name = widget.result.fileName;
-    return name.toLowerCase().endsWith('.pdf')
-        ? name.substring(0, name.length - 4)
-        : name;
-  }
 
   Future<File?> _sourceFileOrWarn() async {
     final file = File(widget.result.filePath);
@@ -54,56 +42,52 @@ class _PdfExportResultCardState extends State<PdfExportResultCard> {
     return null;
   }
 
-  /// "Download PDF" — Part 4/5 of Step 60: an actual local save into the
-  /// device's Downloads, distinct from Share. Uses `file_saver`, which
-  /// writes through Android's scoped-storage-safe MediaStore Downloads API
-  /// on modern Android (no broad storage permission, no deprecated direct
-  /// filesystem path into `/storage/emulated/0/Download` needed) and its
-  /// own safe equivalent on older Android/iOS. No network, no server.
+  /// "Download PDF" — a real save into the device's public Downloads,
+  /// distinct from Share. Reads the exact bytes `PdfExportService` already
+  /// generated and saved to the app's own documents directory (no
+  /// regeneration — Step 61 requirement #10) and hands them to
+  /// `PdfDownloadService`, which writes them into Android's MediaStore
+  /// Downloads via a small native MethodChannel. `_busy` blocks a second
+  /// tap while one save is in flight (the service itself guards this too,
+  /// as a second layer). Never shows a success message unless the native
+  /// save actually reported success.
   Future<void> _downloadPdf() async {
     if (_busy) return;
     setState(() => _busy = true);
-    debugPrint('[PdfExport] PDF_DOWNLOAD_START: ${widget.result.filePath}');
     try {
       final file = await _sourceFileOrWarn();
       if (file == null) return;
       final bytes = await file.readAsBytes();
 
-      final savedPath = await FileSaver.instance.saveFile(
-        name: _baseFileName,
-        bytes: Uint8List.fromList(bytes),
-        ext: 'pdf',
-        mimeType: MimeType.pdf,
+      final savedPath = await PdfDownloadService.saveToDownloads(
+        fileName: widget.result.fileName,
+        bytes: bytes,
       );
 
-      debugPrint('[PdfExport] PDF_DOWNLOAD_SUCCESS');
-      debugPrint('[PdfExport] PDF_DOWNLOAD_PATH: $savedPath');
+      debugPrint('[PdfExport] PDF_DOWNLOAD_UI_SUCCESS: $savedPath');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Saved to Downloads — ${widget.result.fileName}'),
-        ),
+        const SnackBar(content: Text('PDF saved to Downloads')),
       );
+    } on PdfDownloadException catch (e) {
+      // The service already logged the real exception/stack trace under
+      // [PdfDownload] — this is only the clean, already-safe message.
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } catch (e, stackTrace) {
-      // Never claim success on failure — show the clean message, keep the
-      // real cause in the debug log.
-      debugPrint('[PdfExport] PDF_DOWNLOAD_EXCEPTION: $e');
-      debugPrint('[PdfExport] PDF_DOWNLOAD_STACKTRACE: $stackTrace');
+      debugPrint('[PdfDownload] ERROR (unexpected, UI layer): $e');
+      debugPrint('[PdfDownload] STACKTRACE: $stackTrace');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('PDF download failed. Please try again.'),
-        ),
+        const SnackBar(content: Text("Couldn't save PDF. Please try again.")),
       );
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
-  /// Share — kept exactly as it worked before Step 60 (opens the system
-  /// share sheet), now a secondary action instead of what "Download PDF"
-  /// does. Reuses the same `share_plus` dependency already used for the
-  /// existing AI-reply "Share" action.
+  /// Share — unchanged from Step 60: opens the system share sheet via
+  /// `share_plus`, independent of the Download action above.
   Future<void> _sharePdf() async {
     if (_busy) return;
     setState(() => _busy = true);
