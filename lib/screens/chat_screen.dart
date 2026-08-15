@@ -697,6 +697,22 @@ class _ChatScreenState extends State<ChatScreen> {
     final attachmentsToSend = List<_PendingAttachment>.from(_pendingAttachments);
     if ((text.isEmpty && attachmentsToSend.isEmpty) || _isSending) return;
 
+    // Step 59 — Bug 4 fix: flip `_isSending` synchronously, right here,
+    // before the first `await` below. Previously the only `_isSending =
+    // true` in this function happened *after* `await
+    // creditService.checkAndConsume(...)` — so a second call to
+    // `_sendMessage()` (a double-tap, or Enter firing alongside a Send-
+    // button tap — see the `_ChatInputBar` fix above) landing while that
+    // first await was still pending sailed straight past the guard above,
+    // since `_isSending` was still `false`. That let two sends run
+    // concurrently: two credit deductions, two user bubbles, two
+    // overlapping streamed replies fighting over the same `_messages`
+    // list — exactly the kind of duplicate-processing/rebuild storm that
+    // makes the chat appear to hang, and more likely the longer/slower the
+    // surrounding work is (a long message). Setting the guard immediately
+    // closes that window; every early-return path below now resets it.
+    setState(() => _isSending = true);
+
     // Step 56 — Pak AI Credits: a single centralized check-and-deduct call
     // before anything else happens. Cost is calculated from the size of
     // what's actually being sent (see CreditService.calculateCost) and
@@ -716,6 +732,9 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (!hasCredits) {
       if (!mounted) return;
+      // Step 59 — Bug 4 fix: roll back the guard set above — no send is
+      // actually happening, so it must not stay stuck `true`.
+      setState(() => _isSending = false);
       await showCreditLimitSheet(context);
       return;
     }
@@ -730,11 +749,12 @@ class _ChatScreenState extends State<ChatScreen> {
     final hasImages = attachmentsToSend
         .any((a) => a.previewMeta.kind == ChatAttachmentKind.image);
 
-    // Prevent duplicate sends and lock the attachment preview immediately —
-    // before any async work — so the row (and the input area around it)
-    // does not change shape again until this whole send resolves.
+    // Step 59: `_isSending` is already `true` (set synchronously above,
+    // before the credit-check await) — this block now only locks the
+    // attachment preview and sets up the send-stage UI, so the row (and
+    // the input area around it) does not change shape again until this
+    // whole send resolves.
     setState(() {
-      _isSending = true;
       _attachmentsLocked = attachmentsToSend.isNotEmpty;
       _sendingHasImages = hasImages;
       _sendStage = hasImages ? GeminiBatchStage.uploading : null;
@@ -1894,6 +1914,17 @@ class _ChatScreenState extends State<ChatScreen> {
     await VoiceManager.instance.toggle(index, text);
   }
 
+  /// Step 59 — Bug 3: the user-bubble ⋮ More menu's Regenerate action
+  /// calls this with the *user* message's own index — it just resolves
+  /// the AI reply that follows it and forwards to [_regenerateResponse],
+  /// which already does the real work (and re-validates everything, so
+  /// this stays a thin, safe wrapper).
+  Future<void> _regenerateFromUserMessage(int userIndex) async {
+    final aiIndex = userIndex + 1;
+    if (aiIndex >= _messages.length || _messages[aiIndex].isUser) return;
+    await _regenerateResponse(aiIndex);
+  }
+
   /// Re-asks Gemini for a fresh reply to the user prompt that produced the
   /// AI message at [aiIndex], replacing that message in place. Only
   /// offered for the most recent AI reply (see the `canRegenerate` check
@@ -2819,6 +2850,25 @@ class _ChatScreenState extends State<ChatScreen> {
                                 // right while fading in; AI (and error)
                                 // messages just fade in — no slide, no
                                 // bounce/spring on either.
+                                // Step 59 — Bug 3: the ONLY way to
+                                // regenerate a user message's reply is its
+                                // ⋮ More menu (wired below) — never a tap
+                                // on the bubble itself (no `onTap` exists
+                                // anywhere on it; see ChatBubble/
+                                // GestureDetector above). Only offered for
+                                // the most recent exchange — this user
+                                // message immediately followed by the
+                                // conversation's last (AI) message — and
+                                // never mid-send, matching the same
+                                // restriction the AI reply's own Regenerate
+                                // already uses.
+                                final hasFollowingAiReply =
+                                    index + 1 < _messages.length &&
+                                        !_messages[index + 1].isUser;
+                                final isLastUserExchange = message.isUser &&
+                                    hasFollowingAiReply &&
+                                    index + 1 == _messages.length - 1 &&
+                                    !_isSending;
                                 final entrance = message.isUser
                                     ? FadeInRight(
                                         duration:
@@ -2832,6 +2882,11 @@ class _ChatScreenState extends State<ChatScreen> {
                                             animate: identical(
                                                 message, _streamingMessage),
                                             onStreamTick: _scrollToBottom,
+                                            onRegenerate: isLastUserExchange
+                                                ? () =>
+                                                    _regenerateFromUserMessage(
+                                                        index)
+                                                : null,
                                           ),
                                         ),
                                       )
@@ -4041,8 +4096,24 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                   focusNode: _focusNode,
                   minLines: 1,
                   maxLines: 5,
-                  textInputAction: TextInputAction.send,
-                  onSubmitted: (_) => onSend(),
+                  // Step 59 — Bug 1/Bug 4 fix: this field had no explicit
+                  // `keyboardType`, and used `TextInputAction.send` with an
+                  // `onSubmitted` that called `onSend()` directly — i.e.
+                  // pressing Enter/Return on the keyboard sent the message
+                  // immediately, entirely outside the normal Send-button
+                  // path (and its `_isSending` guard timing). That's an
+                  // accidental second send trigger: a keyboard Enter fired
+                  // in the same window as a Send-button tap (easy to do
+                  // while waiting on a long message to go out) could start
+                  // two overlapping `_sendMessage()` calls. Switching to
+                  // `TextInputType.multiline` + `TextInputAction.newline`
+                  // (Return inserts a newline, like every other chat app)
+                  // and dropping `onSubmitted` removes that second trigger
+                  // entirely — the Send/Stop button is now the only way to
+                  // submit. Multiline growth (minLines/maxLines above) is
+                  // unchanged.
+                  keyboardType: TextInputType.multiline,
+                  textInputAction: TextInputAction.newline,
                   // Step 55 fix: typed text had no explicit style, so it
                   // fell back to the default TextTheme color — which (see
                   // `app_theme.dart`) used to be a fixed dark color
@@ -4163,36 +4234,63 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                         // keeping the same color, icon, animation, and
                         // behavior untouched.
                         padding: const EdgeInsets.all(8),
+                        // Step 59 — Bug 1 fix: each state's child used to
+                        // have a different intrinsic size (10x10 stop
+                        // square, 14x14 spinner, 18x18 send icon). Since
+                        // this button sizes itself to its child (there was
+                        // no fixed box around the AnimatedSwitcher) and the
+                        // whole composer row is bottom-anchored
+                        // (`crossAxisAlignment: end`), a smaller child made
+                        // the *whole circular button* shrink from the top
+                        // down — which visually reads as the button
+                        // "moving downward" when streaming starts. Wrapping
+                        // every state's child in an identically-sized
+                        // 18x18 box (matching the send icon, the largest of
+                        // the three) keeps the button's overall diameter —
+                        // and therefore its vertical center — fixed across
+                        // idle/sending/streaming/done. Icon, color,
+                        // animation, and behavior are all unchanged.
                         child: AnimatedSwitcher(
                           duration: const Duration(milliseconds: 180),
                           transitionBuilder: (child, animation) =>
                               ScaleTransition(scale: animation, child: child),
-                          child: isStreaming
-                              ? Container(
-                                  key: const ValueKey('stop'),
-                                  width: 10,
-                                  height: 10,
-                                  decoration: BoxDecoration(
-                                    color: theme.colorScheme.onPrimary,
-                                    borderRadius: BorderRadius.circular(3),
-                                  ),
-                                )
-                              : isSending
-                                  ? SizedBox(
-                                      key: const ValueKey('sending'),
-                                      width: 14,
-                                      height: 14,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
+                          child: SizedBox(
+                            key: ValueKey(
+                              isStreaming
+                                  ? 'stop'
+                                  : isSending
+                                      ? 'sending'
+                                      : 'send',
+                            ),
+                            width: 18,
+                            height: 18,
+                            child: Center(
+                              child: isStreaming
+                                  ? Container(
+                                      width: 10,
+                                      height: 10,
+                                      decoration: BoxDecoration(
                                         color: theme.colorScheme.onPrimary,
+                                        borderRadius:
+                                            BorderRadius.circular(3),
                                       ),
                                     )
-                                  : Icon(
-                                      Icons.arrow_upward_rounded,
-                                      key: const ValueKey('send'),
-                                      color: theme.colorScheme.onPrimary,
-                                      size: 18,
-                                    ),
+                                  : isSending
+                                      ? SizedBox(
+                                          width: 14,
+                                          height: 14,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: theme.colorScheme.onPrimary,
+                                          ),
+                                        )
+                                      : Icon(
+                                          Icons.arrow_upward_rounded,
+                                          color: theme.colorScheme.onPrimary,
+                                          size: 18,
+                                        ),
+                            ),
+                          ),
                         ),
                       ),
                     ),

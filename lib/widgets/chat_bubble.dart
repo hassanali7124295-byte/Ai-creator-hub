@@ -3,6 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+// Step 59 — Bug 2: needed for `md.Element`, the AST node type
+// `MarkdownElementBuilder.visitElementAfter` receives. `markdown` is
+// already resolved transitively (flutter_markdown_plus depends on it),
+// so no pubspec change is required.
+import 'package:markdown/markdown.dart' as md;
 
 import '../core/services/document_intelligence_service.dart';
 import '../models/chat_message.dart';
@@ -284,6 +289,14 @@ class _ChatBubbleState extends State<ChatBubble> {
             // below), so this bubble no longer needs a tap/long-press
             // handler of its own — long-press-to-copy is still wired up
             // one level up, in the screen's list itemBuilder.
+            //
+            // Step 59 — Bug 3: no `onTap` is set here (nor anywhere else
+            // on this bubble/its children) for either user or AI messages
+            // — tapping a message bubble does, and must continue to do,
+            // nothing. The only way to regenerate a user message's reply
+            // is the ⋮ More menu added below, which only ever calls
+            // `widget.onRegenerate` — it never re-populates the composer
+            // or re-sends anything itself.
             child: Container(
               margin: const EdgeInsets.only(top: 8),
               padding: isAiReply
@@ -406,6 +419,22 @@ class _ChatBubbleState extends State<ChatBubble> {
                   MarkdownBody(
                     data: displayedText,
                     selectable: true,
+                    // Step 59 — Bug 2: fenced code blocks (```...```) parse
+                    // to a `<pre><code>...</code></pre>` AST node. Without
+                    // a custom builder for the `pre` tag, flutter_markdown
+                    // renders it using `codeblockDecoration` alone — no
+                    // header, no attached copy control, which is why Copy
+                    // was only ever available way below via the AI
+                    // message's own action row (i.e. "below the code
+                    // block" and copying the *whole reply*, not the code).
+                    // Registering a builder for `pre` replaces just that
+                    // one element's rendering with `_CodeBlockWidget`
+                    // (header + its own Copy button), while everything
+                    // else (inline `code`, paragraphs, tables, etc.) keeps
+                    // using the unchanged `styleSheet` below.
+                    builders: {
+                      'pre': _CodeBlockBuilder(theme: theme),
+                    },
                     styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
                       p: theme.textTheme.bodyLarge?.copyWith(
                         color: textColor,
@@ -484,34 +513,67 @@ class _ChatBubbleState extends State<ChatBubble> {
               ),
             ),
           ),
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 200),
-            switchInCurve: Curves.easeOut,
-            switchOutCurve: Curves.easeIn,
-            transitionBuilder: (child, animation) => FadeTransition(
-              opacity: animation,
-              child: child,
-            ),
-            child: !showActions
-                ? const SizedBox.shrink(key: ValueKey('actions-hidden'))
-                : Padding(
-                    key: const ValueKey('actions-shown'),
-                    padding: const EdgeInsets.only(top: 6, left: 2),
-                    child: _ActionRow(
-                      onCopy: widget.onCopy,
-                      onShare: widget.onShare,
-                      onRegenerate: widget.onRegenerate,
-                      onReadAloud: widget.onReadAloud,
-                      onDelete: widget.onDelete,
-                      onMore: _openMoreMenu,
-                      isSpeaking: widget.isSpeaking,
-                      liked: _feedback == _Feedback.liked,
-                      onToggleLike: _toggleLike,
-                      disliked: _feedback == _Feedback.disliked,
-                      onToggleDislike: _toggleDislike,
+          // Step 59 — Bug 3: user messages get a minimal ⋮ affordance —
+          // reusing the exact same `_openMoreMenu`/`_showMoreMenu` popup
+          // the AI reply row already uses — instead of a tap/long-press on
+          // the bubble itself. Only `onRegenerate` is ever wired up for a
+          // user message (see chat_screen.dart), so Share/Delete render
+          // dimmed and inert in that popup, same as an older AI reply's
+          // disabled Regenerate does today. Shown only when a regenerate
+          // is actually possible (the screen leaves `onRegenerate` null
+          // otherwise) — nothing new appears for older user messages.
+          if (isUser)
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 200),
+              switchInCurve: Curves.easeOut,
+              switchOutCurve: Curves.easeIn,
+              transitionBuilder: (child, animation) => FadeTransition(
+                opacity: animation,
+                child: child,
+              ),
+              child: widget.onRegenerate == null
+                  ? const SizedBox.shrink(key: ValueKey('user-more-hidden'))
+                  : Padding(
+                      key: const ValueKey('user-more-shown'),
+                      padding: const EdgeInsets.only(top: 4, right: 2),
+                      child: Builder(
+                        builder: (moreContext) => _ActionIcon(
+                          icon: Icons.more_horiz_rounded,
+                          tooltip: 'More',
+                          onTap: () => _openMoreMenu(moreContext),
+                        ),
+                      ),
                     ),
-                  ),
-          ),
+            )
+          else
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 200),
+              switchInCurve: Curves.easeOut,
+              switchOutCurve: Curves.easeIn,
+              transitionBuilder: (child, animation) => FadeTransition(
+                opacity: animation,
+                child: child,
+              ),
+              child: !showActions
+                  ? const SizedBox.shrink(key: ValueKey('actions-hidden'))
+                  : Padding(
+                      key: const ValueKey('actions-shown'),
+                      padding: const EdgeInsets.only(top: 6, left: 2),
+                      child: _ActionRow(
+                        onCopy: widget.onCopy,
+                        onShare: widget.onShare,
+                        onRegenerate: widget.onRegenerate,
+                        onReadAloud: widget.onReadAloud,
+                        onDelete: widget.onDelete,
+                        onMore: _openMoreMenu,
+                        isSpeaking: widget.isSpeaking,
+                        liked: _feedback == _Feedback.liked,
+                        onToggleLike: _toggleLike,
+                        disliked: _feedback == _Feedback.disliked,
+                        onToggleDislike: _toggleDislike,
+                      ),
+                    ),
+            ),
           // Step 26: a failed reply gets a lightweight Retry chip in place
           // of the (inapplicable) copy/share/regenerate row — only shown
           // when the screen has wired one up, which it only does for the
@@ -521,6 +583,192 @@ class _ChatBubbleState extends State<ChatBubble> {
               padding: const EdgeInsets.only(top: 6, left: 2),
               child: _RetryChip(onTap: widget.onRetry!),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Step 59 — Bug 2: renders each fenced code block (the markdown `pre`
+/// element) as its own self-contained card — a header row (language label
+/// + Copy button) on top of the code, matching ChatGPT/Claude's pattern.
+/// One instance is shared across every code block in a given reply (see
+/// `MarkdownBody.builders` above); `visitElementAfter` is called once per
+/// `pre` element found, so multiple code blocks in one AI message each get
+/// their own independent `_CodeBlockWidget` — and therefore their own
+/// independent Copy button, scoped to only that block's code.
+class _CodeBlockBuilder extends MarkdownElementBuilder {
+  final ThemeData theme;
+
+  _CodeBlockBuilder({required this.theme});
+
+  @override
+  Widget? visitElementAfter(md.Element element, TextStyle? preferredStyle) {
+    // `element` is the `<pre>` node; its text content is the full code
+    // block. `textContent` already walks into the nested `<code>` child,
+    // so this is exactly (only) that one block's code — never anything
+    // else from the surrounding message.
+    var code = element.textContent;
+    if (code.endsWith('\n')) code = code.substring(0, code.length - 1);
+
+    // A fenced block with a language hint (```dart, ```html, ...) puts it
+    // on the inner `<code>` element as a `language-xxx` class.
+    String? language;
+    final children = element.children;
+    if (children != null && children.isNotEmpty) {
+      final inner = children.first;
+      if (inner is md.Element) {
+        final cls = inner.attributes['class'];
+        if (cls != null && cls.startsWith('language-')) {
+          language = cls.substring('language-'.length);
+        }
+      }
+    }
+
+    return _CodeBlockWidget(code: code, language: language, theme: theme);
+  }
+}
+
+/// The actual code-block card: a small header (language + Copy) attached
+/// directly above the code, and the code itself below — both inside one
+/// rounded container, horizontally scrollable for long lines, matching the
+/// existing `codeblockDecoration`/`codeblockPadding` look this replaces.
+class _CodeBlockWidget extends StatefulWidget {
+  final String code;
+  final String? language;
+  final ThemeData theme;
+
+  const _CodeBlockWidget({
+    required this.code,
+    required this.language,
+    required this.theme,
+  });
+
+  @override
+  State<_CodeBlockWidget> createState() => _CodeBlockWidgetState();
+}
+
+class _CodeBlockWidgetState extends State<_CodeBlockWidget> {
+  bool _copied = false;
+  Timer? _resetTimer;
+
+  @override
+  void dispose() {
+    _resetTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _copy() async {
+    // Copies ONLY this block's code — never the rest of the AI reply.
+    await Clipboard.setData(ClipboardData(text: widget.code));
+    if (!mounted) return;
+    HapticFeedback.selectionClick();
+    setState(() => _copied = true);
+    _resetTimer?.cancel();
+    _resetTimer = Timer(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _copied = false);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = widget.theme;
+    final background = theme.colorScheme.surfaceContainerHighest;
+    final label = (widget.language == null || widget.language!.isEmpty)
+        ? 'Code'
+        : widget.language!;
+
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header: language on the left, Copy on the right — stays
+          // attached to this exact block, never floats to the bottom of
+          // the message.
+          Container(
+            padding: const EdgeInsets.fromLTRB(12, 6, 6, 6),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.outlineVariant.withOpacity(0.18),
+              border: Border(
+                bottom: BorderSide(
+                  color: theme.colorScheme.outlineVariant.withOpacity(0.3),
+                ),
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  label,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+                Material(
+                  color: Colors.transparent,
+                  borderRadius: BorderRadius.circular(6),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(6),
+                    onTap: _copy,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _copied
+                                ? Icons.check_rounded
+                                : Icons.copy_outlined,
+                            size: 14,
+                            color: _copied
+                                ? theme.colorScheme.primary
+                                : theme.colorScheme.onSurfaceVariant,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            _copied ? 'Copied' : 'Copy',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: _copied
+                                  ? theme.colorScheme.primary
+                                  : theme.colorScheme.onSurfaceVariant,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // The code itself — horizontally scrollable so long lines don't
+          // wrap or get clipped, same as before.
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: SelectableText(
+                widget.code,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurface,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ),
+          ),
         ],
       ),
     );
